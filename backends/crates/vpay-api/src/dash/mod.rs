@@ -7,7 +7,9 @@
 //! Every request here is a COSE_Sign1 message signed by a **console key**: a
 //! P-256 key whose private half lives non-extractable in a person's browser,
 //! paired through vaam's admin phone (`POST /svc/v1/console_keys`) or by an
-//! operator (`vpay-server staff pair-key`), and living exactly 30 days. There is
+//! operator (`vpay-server staff pair-key`), and living at most 30 days (exactly
+//! 30 for a vaam pairing; 24 hours by default for the operator's break-glass,
+//! issue #152). There is
 //! no session, no access token, no authorization code and no password
 //! (owner rulings, 2026-09-29, 2026-10-09 and 2026-10-26); the layer that opens
 //! the request is [`crate::envelope`], and the step that turns the verified key

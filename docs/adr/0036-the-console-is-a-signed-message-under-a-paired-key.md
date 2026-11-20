@@ -15,6 +15,12 @@
   command-line key enrolment; **R2** a paired console user is a plain member bound
   to `dashboard.merchant_id` with `is_admin = false`, never an administrator
   through pairing; **R3** a console key expires 30 days after pairing.
+- **Amended 2026-11-19 by [ADR-0038](0038-break-glass-console-keys-are-bounded-and-audited.md)**
+  (issue #152): R3 becomes an **upper bound** — a vaam pairing still writes
+  exactly 30 days, the operator's break-glass `staff pair-key` writes 24 hours
+  by default (up to 30 days via `--ttl-hours`) — and every break-glass pairing
+  and revocation now requires `--operator` and is written to the append-only
+  `audit_events` journal.
 
 ## Context
 
@@ -77,6 +83,12 @@ revoke-key` revoke _any_ member's key, an administrator's included. Revoking
    revoking grants nothing.
 5. **A key lives exactly 30 days** (720 hours) from `paired_at`, enforced by a
    `CHECK` (`console_keys_lives_exactly_thirty_days`) as well as by the writer.
+   _(**Amended 2026-11-19 by [ADR-0038](0038-break-glass-console-keys-are-bounded-and-audited.md),
+   issue #152:** 30 days is now the **maximum**, and the constraint is
+   `console_keys_lives_at_most_thirty_days`. Every key a vaam phone pairing
+   writes still lives exactly 30 days; the operator's `staff pair-key`
+   break-glass key lives 24 hours by default and is journalled. The sentence as
+   written above stood from 2026-10-26 to 2026-11-19.)_
    It is never extended: a console pairs again with a new key. A **revoked or
    expired key is never registered again** — the row is never deleted, so its
    thumbprint stays taken.

@@ -73,8 +73,8 @@ use p256::ecdsa::{Signature, VerifyingKey};
 use time::OffsetDateTime;
 use vpay_core::{Category, Classify};
 use vpay_db::{
-    ConsoleKeyRow, CredentialKind, DbError, NewConsoleKey, NewCredential, NewStaff,
-    PersistenceError, Repositories, StaffRow, TxOutcome, UnitOfWork as _,
+    CONSOLE_KEY_LIFETIME, ConsoleKeyRow, CredentialKind, DbError, NewAuditEvent, NewConsoleKey,
+    NewCredential, NewStaff, PersistenceError, Repositories, StaffRow, TxOutcome, UnitOfWork as _,
 };
 
 /// The text the proof signs begins with this tag, so a signature made for
@@ -443,7 +443,15 @@ pub async fn pair_through_vaam(
 
     if let Some(member) = linked(repositories.as_ref(), vaam_user_id).await? {
         require_pairable(&member, tenant)?;
-        return store_key(repositories.as_ref(), &member, &key, label, now).await;
+        return store_key(
+            repositories.as_ref(),
+            &member,
+            &key,
+            label,
+            CONSOLE_KEY_LIFETIME,
+            now,
+        )
+        .await;
     }
     provision_and_pair(
         repositories,
@@ -536,6 +544,7 @@ async fn provision_and_pair(
         public_key: key.public_key.clone(),
         thumbprint: key.thumbprint.clone(),
         label: label.clone(),
+        lifetime: CONSOLE_KEY_LIFETIME,
         now,
     };
     let outcome = repositories
@@ -561,7 +570,15 @@ async fn provision_and_pair(
         Err(DbError::Persistence(PersistenceError::Unique { .. })) => {
             if let Some(member) = linked(repositories.as_ref(), vaam_user_id).await? {
                 require_pairable(&member, tenant)?;
-                return store_key(repositories.as_ref(), &member, key, label, now).await;
+                return store_key(
+                    repositories.as_ref(),
+                    &member,
+                    key,
+                    label,
+                    CONSOLE_KEY_LIFETIME,
+                    now,
+                )
+                .await;
             }
             if repositories
                 .find_console_key(&key.thumbprint)
@@ -599,7 +616,7 @@ async fn linked(
 
 /// Stores `key` for `member`, or finds that this member's live key is already
 /// stored (an idempotent repeat). The one write both entry points make, so the
-/// 30-day life, the thumbprint's uniqueness and "a revoked or expired key is
+/// key's `lifetime`, the thumbprint's uniqueness and "a revoked or expired key is
 /// never reinstated" are decided in one place.
 ///
 /// # Errors
@@ -611,6 +628,7 @@ pub async fn store_key(
     member: &StaffRow,
     key: &ParsedConsoleKey,
     label: Option<String>,
+    lifetime: time::Duration,
     now: OffsetDateTime,
 ) -> Result<Paired, crate::ApiError> {
     let new = NewConsoleKey {
@@ -619,6 +637,7 @@ pub async fn store_key(
         public_key: key.public_key.clone(),
         thumbprint: key.thumbprint.clone(),
         label,
+        lifetime,
         now,
     };
     match repositories.pair_console_key(new).await {
@@ -699,6 +718,228 @@ pub async fn revoke(
 ) -> Result<ConsoleKeyRow, crate::ApiError> {
     check_thumbprint(thumbprint)?;
     repositories.revoke_console_key(thumbprint, now).await?;
+    repositories
+        .find_console_key(thumbprint)
+        .await?
+        .ok_or_else(|| crate::ApiError::NotFound {
+            resource: "console_key",
+            id: thumbprint.to_owned(),
+        })
+}
+
+/// The default life of a key paired by the operator's break-glass command,
+/// re-exported so callers name the policy here rather than the storage crate
+/// (issue #152).
+pub use vpay_db::BREAK_GLASS_KEY_LIFETIME;
+
+/// The most characters an operator identity may occupy: the
+/// `audit_events_actor_id_length` bound the journal enforces.
+const OPERATOR_MAX_CHARS: usize = 128;
+
+/// The operator identity a break-glass command must name (issue #152): the
+/// account the `audit_events` row is attributed to.
+///
+/// A break-glass act with no attributable actor is exactly the gap
+/// `GAP-152-BREAK-GLASS` names, so an empty identity is refused rather than
+/// journalled as blank.
+///
+/// # Errors
+///
+/// [`ConsoleKeyError::Malformed`] for an empty or over-long identity.
+pub fn clean_operator(operator: &str) -> Result<String, ConsoleKeyError> {
+    let trimmed = operator.trim();
+    if trimmed.is_empty() {
+        return Err(ConsoleKeyError::Malformed {
+            field: "operator",
+            reason: "must name who is acting; an unattributable break-glass act is the gap",
+        });
+    }
+    if trimmed.chars().count() > OPERATOR_MAX_CHARS {
+        return Err(ConsoleKeyError::Malformed {
+            field: "operator",
+            reason: "must be at most 128 characters",
+        });
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// One `console_key:*` audit row, as a break-glass command builds it.
+///
+/// The target representation is the key's RFC 9679 thumbprint — a public
+/// identifier, never PII — and the actor is the operator's self-declared
+/// identity.
+fn break_glass_event(
+    tenant: &str,
+    operator: &str,
+    action: &str,
+    outcome: &str,
+    thumbprint: &str,
+    now: OffsetDateTime,
+) -> NewAuditEvent {
+    NewAuditEvent {
+        id: vpay_core::ids::audit_event_id(),
+        occurred_at: now,
+        tenant: tenant.to_owned(),
+        actor_kind: "operator".to_owned(),
+        actor_id: operator.to_owned(),
+        action: action.to_owned(),
+        outcome: outcome.to_owned(),
+        target_class: "console_key".to_owned(),
+        target_repr: thumbprint.to_owned(),
+        operation_id: vpay_core::ids::operation_id(),
+    }
+}
+
+/// Refuses a lifetime no console key may carry, before any write.
+///
+/// The database says the same (`console_keys_lives_at_most_thirty_days`); this
+/// answers in the command's own vocabulary so an operator reads "ttl" rather
+/// than a constraint name.
+fn check_lifetime(lifetime: time::Duration) -> Result<(), ConsoleKeyError> {
+    if lifetime <= time::Duration::ZERO || lifetime > CONSOLE_KEY_LIFETIME {
+        return Err(ConsoleKeyError::Malformed {
+            field: "ttl",
+            reason: "must be more than zero and at most 30 days",
+        });
+    }
+    Ok(())
+}
+
+/// The break-glass pairing (`vpay-server staff pair-key`, issue #152): attach a
+/// key with a `lifetime` shorter than the ordinary 30 days and record the act
+/// in `audit_events`, both in one transaction so the journal cannot lag the key.
+///
+/// Idempotent for a member's own live key, exactly as [`store_key`] is: a
+/// repeat returns the stored key and writes no second audit row.
+///
+/// # Errors
+///
+/// [`ConsoleKeyError::Malformed`] for an operator identity or lifetime the
+/// command may not carry, [`ConsoleKeyError::KeyTaken`] when the thumbprint is
+/// another member's, revoked or expired, [`ConsoleKeyError::Inconsistent`] if
+/// the key vanishes between writes; the database's own error otherwise.
+pub async fn pair_from_operator(
+    repositories: &dyn Repositories,
+    member: &StaffRow,
+    key: &ParsedConsoleKey,
+    label: Option<String>,
+    lifetime: time::Duration,
+    operator: &str,
+    now: OffsetDateTime,
+) -> Result<Paired, crate::ApiError> {
+    let operator = clean_operator(operator)?;
+    check_lifetime(lifetime)?;
+    let event = break_glass_event(
+        &member.merchant_id,
+        &operator,
+        "console_key:pair",
+        "paired",
+        &key.thumbprint,
+        now,
+    );
+    let thumbprint = key.thumbprint.clone();
+    let new = NewConsoleKey {
+        id: vpay_core::ids::console_key_id(),
+        staff_member_id: member.id.clone(),
+        public_key: key.public_key.clone(),
+        thumbprint: key.thumbprint.clone(),
+        label,
+        lifetime,
+        now,
+    };
+    let outcome = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.pair_console_key_in_tx(new).await?;
+                tx.append_audit_event_in_tx(&event).await?;
+                Ok::<_, DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await;
+    match outcome {
+        Ok(_) => {
+            let row = repositories
+                .find_console_key(&thumbprint)
+                .await?
+                .ok_or(ConsoleKeyError::Inconsistent)?;
+            Ok(Paired {
+                key: row,
+                created: true,
+            })
+        }
+        Err(DbError::Persistence(PersistenceError::Unique { .. })) => {
+            let existing = repositories
+                .find_console_key(&thumbprint)
+                .await?
+                .ok_or(ConsoleKeyError::Inconsistent)?;
+            if existing.staff_member_id == member.id && existing.is_live(now) {
+                Ok(Paired {
+                    key: existing,
+                    created: false,
+                })
+            } else {
+                Err(ConsoleKeyError::KeyTaken.into())
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The break-glass revocation (`vpay-server staff revoke-key`, issue #152):
+/// revoke the key and record the act in `audit_events`, both in one
+/// transaction. Idempotent for a key already revoked.
+///
+/// # Errors
+///
+/// [`ConsoleKeyError::Malformed`] for an operator identity or thumbprint the
+/// command may not carry, `404` for a thumbprint nothing registered,
+/// [`ConsoleKeyError::Inconsistent`] if the owning member has vanished; the
+/// database's own error otherwise.
+pub async fn revoke_from_operator(
+    repositories: &dyn Repositories,
+    thumbprint: &str,
+    operator: &str,
+    now: OffsetDateTime,
+) -> Result<ConsoleKeyRow, crate::ApiError> {
+    let operator = clean_operator(operator)?;
+    check_thumbprint(thumbprint)?;
+    let existing = repositories
+        .find_console_key(thumbprint)
+        .await?
+        .ok_or_else(|| crate::ApiError::NotFound {
+            resource: "console_key",
+            id: thumbprint.to_owned(),
+        })?;
+    let member = vpay_db::Staff::find(repositories, &existing.staff_member_id)
+        .await?
+        .ok_or(ConsoleKeyError::Inconsistent)?;
+    let event = break_glass_event(
+        &member.merchant_id,
+        &operator,
+        "console_key:revoke",
+        "revoked",
+        thumbprint,
+        now,
+    );
+    let for_tx = thumbprint.to_owned();
+    repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                // Only a call that actually set `revoked_at` is journalled: a
+                // repeat `staff revoke-key` is a no-op and must not append a
+                // second `console_key:revoke` row claiming a change it did not
+                // make, exactly as a repeat pairing writes no second row.
+                if tx.revoke_console_key_in_tx(&for_tx, now).await? {
+                    tx.append_audit_event_in_tx(&event).await?;
+                }
+                Ok::<_, DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
+    // The read after the commit is advisory: the revocation (and its journal
+    // row) already committed. A key whose owning member is deleted between the
+    // pre-read and here is removed by the FK cascade, and this answers `404`
+    // rather than the row — the one losing race, and the safe direction.
     repositories
         .find_console_key(thumbprint)
         .await?
@@ -944,5 +1185,33 @@ mod tests {
             ),
             Err(ConsoleKeyError::NotPermitted)
         );
+    }
+
+    /// An un-attributable break-glass act is the gap `GAP-152-BREAK-GLASS`
+    /// names, so an empty (or whitespace-only) operator and an over-long one
+    /// are both refused; a normal identity is trimmed and kept.
+    #[test]
+    fn an_empty_or_overlong_operator_is_refused() {
+        assert!(clean_operator("   ").is_err());
+        assert!(clean_operator("").is_err());
+        assert!(clean_operator(&"x".repeat(OPERATOR_MAX_CHARS + 1)).is_err());
+        assert_eq!(
+            clean_operator("  oncall@acme.example ").expect("a normal identity"),
+            "oncall@acme.example"
+        );
+        assert!(clean_operator(&"x".repeat(OPERATOR_MAX_CHARS)).is_ok());
+    }
+
+    /// The break-glass lifetime must be more than zero and at most the ordinary
+    /// 30 days: the Rust guard says what
+    /// `console_keys_lives_at_most_thirty_days` enforces, in the command's own
+    /// vocabulary.
+    #[test]
+    fn a_lifetime_of_zero_or_over_thirty_days_is_refused() {
+        assert!(check_lifetime(vpay_db::BREAK_GLASS_KEY_LIFETIME).is_ok());
+        assert!(check_lifetime(CONSOLE_KEY_LIFETIME).is_ok());
+        assert!(check_lifetime(CONSOLE_KEY_LIFETIME + time::Duration::seconds(1)).is_err());
+        assert!(check_lifetime(time::Duration::ZERO).is_err());
+        assert!(check_lifetime(time::Duration::seconds(-1)).is_err());
     }
 }

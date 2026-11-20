@@ -67,15 +67,20 @@ password; read it from the database:
 docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml exec postgres \
   psql -U vpay -d vpay -Atc "select id from staff_members where email = 'ada@example.test'"
 docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml run --rm --no-deps -T vpay-server \
-  staff pair-key --staff <that id> --public-key <SEC1 uncompressed P-256 key, base64url>
+  staff pair-key --staff <that id> --public-key <SEC1 uncompressed P-256 key, base64url> \
+    --ttl-hours 8 --operator oncall@example.test
 ```
 
-It prints `<staff id> <key id> <thumbprint> <expires_at>` and the key is good
-for 30 days. To end it sooner, with the thumbprint it printed:
+It prints `<staff id> <key id> <thumbprint> <expires_at>`. Since vpay#152
+([ADR-0038](../../adr/0038-break-glass-console-keys-are-bounded-and-audited.md))
+the key lives **24 hours** by default (`--ttl-hours` up to 720, as above), the
+command **requires `--operator`**, and it writes a `console_key:pair` row to the
+append-only `audit_events` journal. To end it sooner, with the thumbprint it
+printed:
 
 ```bash
 docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml run --rm --no-deps -T vpay-server \
-  staff revoke-key --thumbprint <the 64 hex characters>
+  staff revoke-key --thumbprint <the 64 hex characters> --operator oncall@example.test
 ```
 
 It takes effect on the key's next request and is idempotent. A client that holds the private half signs each request as

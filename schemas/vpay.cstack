@@ -2430,7 +2430,9 @@ model ConsoleKey {
   thumbprint String @unique @length(min: 64, max: 64)
   label String? @length(min: 1, max: 64)
   paired_at DateTime
-  // `paired_at` plus exactly 720 hours — `console_keys_lives_exactly_thirty_days`.
+  // At most `paired_at` plus 720 hours and strictly after it —
+  // `console_keys_lives_at_most_thirty_days`. The vaam pairing writes exactly
+  // 720 hours; `staff pair-key` writes a shorter break-glass life (issue #152).
   expires_at DateTime
   revoked_at DateTime?
 

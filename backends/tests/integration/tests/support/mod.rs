@@ -1133,6 +1133,7 @@ pub(crate) async fn pair_console_key(
             public_key: sealed::console_public_b64(label),
             thumbprint: thumbprint.clone(),
             label: Some(label.to_owned()),
+            lifetime: vpay_db::CONSOLE_KEY_LIFETIME,
             now,
         })
         .await

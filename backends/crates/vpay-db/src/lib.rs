@@ -150,7 +150,8 @@ pub use checkout_sessions::{
 pub use client_assertion::{ClientAssertions, client_assertion_store};
 pub use config_reconcile::{ConfigReconcile, CurrencySeed, ProviderSeed};
 pub use console_keys::{
-    ALG_ESP256, CONSOLE_KEY_LIFETIME, ConsoleKeyRow, ConsoleKeys, NewConsoleKey,
+    ALG_ESP256, BREAK_GLASS_KEY_LIFETIME, CONSOLE_KEY_LIFETIME, ConsoleKeyRow, ConsoleKeys,
+    NewConsoleKey,
 };
 pub use customers::{
     CustomerAddress, CustomerErasure, CustomerListPage, CustomerPatch, CustomerRow, Customers,
