@@ -44,7 +44,7 @@ vpay-config.workspace = true
 vpay-wire.workspace = true
 # `merchant_keys`: the `CoseVerifierResolver` the signed transport verifies a
 # merchant's request against (VP-2), over `CoseVerifyKey` and the RFC 9679
-# thumbprint. Both are `=0.16.0` workspace pins, in the lock since VP-1 (the
+# thumbprint. Both are `=0.20.4` workspace pins, in the lock since VP-1 (the
 # facade pulls them), so no new package. `cratestack-core` is only for the
 # `CratestackError` the resolver trait's signature returns.
 cratestack-cose.workspace = true

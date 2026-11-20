@@ -24,6 +24,21 @@ Inside this workspace it is a member crate:
 vpay-sdk = { path = "sdks/rust" }
 ```
 
+From outside, as a git dependency. This crate is `publish = false`; once the first
+release after the CrateStack 0.20.4 change is tagged, use that tag (its `Cargo.toml`
+carries the CrateStack it pins):
+
+```toml
+vpay-sdk = { git = "https://github.com/vaam-apps/vpay", tag = "vX.Y.Z" }
+```
+
+Since 2026-11-19 the SDK is on CrateStack `=0.20.4`. Every `cratestack-*` crate
+requires its siblings exactly (`=x.y.z`), so a workspace that also uses
+CrateStack must be on that same version or its lock holds two complete trees.
+CrateStack's envelope layer and client sealing are byte-identical between 0.16.0
+and 0.20.4 (`tests/wire_golden.rs`); the SDK's own send path and `vpay-api`'s
+router are exercised by the workspace's suites at 0.20.4 only.
+
 ```bash
 cargo nextest run -p vpay-sdk    # or: just test-sdk-rust
 ```
