@@ -3,6 +3,8 @@
 // established by `rpc-runtime.ts.j2`'s identical import: the other leg is
 // `import type`, which is erased entirely at compile time.
 import { encodeBinaryAsJson } from "./models.js";
+import { COMPACT_JSON_CONTENT_TYPE, RestCompactSession } from "./compact.js";
+import type { RestCompactCall } from "./compact.js";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -157,10 +159,37 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
 // Hex of the whole-contract digest: moves when any op's contract does.
 export const CLIENT_CONTRACT_SHA256: string = "141caa8f4f756159ed6224fffb9c211f3e50abc230449b1e8d26ec8f22ae909c";
 
+// Base64 of the compact wire key tables for every op above (the artifact
+// `cratestack_core::compact::KeyTables::to_bytes` writes), read only when
+// `compactKeys` is on (see `./compact`).
+export const KEY_TABLES: string = "gwGYSpgqZmFtb3VudABqY3JlYXRlZF9hdABoY3VycmVuY3kDbWN1cnJlbmN5X2NvZGUAbGZhaWx1cmVfY29kZQBrZmFpbHVyZV9yYXcAYmlkAHNsZWRnZXJfdHJhbnNhY3Rpb25zggAGaXBheWVyX3JlZgBwcGF5ZXJfcmVmX21hc2tlZABucGF5bWVudF9pbnRlbnQHcXBheW1lbnRfaW50ZW50X2lkAGhwcm92aWRlcghtcHJvdmlkZXJfY29kZQB1cHJvdmlkZXJfcmVmZXJlbmNlX2lkAG9wcm92aWRlcl90eG5faWQAbHJlZGlyZWN0X3VybABncmVmdW5kc4IACWpyZXR1cm5fdXJsAGVzdGF0ZQBqdXBkYXRlZF9hdACYKGpjYW5jZWxfdXJsAHRjbGllbnRfc2VjcmV0X3N1ZmZpeABqY3JlYXRlZF9hdABoY3VzdG9tZXIEa2N1c3RvbWVyX2lkAGpleHBpcmVzX2F0AGJpZABobGl2ZW1vZGUAa21lcmNoYW50X2lkAG5wYXltZW50X2ludGVudAdxcGF5bWVudF9pbnRlbnRfaWQAbnBheW1lbnRfc3RhdHVzAG9wdWJsaXNoYWJsZV9rZXkAbHJldHVybl90b2tlbgBqcmV0dXJuX3VybABjc2VxAGZzdGF0dXMAa3N1Y2Nlc3NfdXJsAGd1aV9tb2RlAGp1cGRhdGVkX2F0AIxnY2hhcmdlc4IAAWRjb2RlAGhleHBvbmVudABubGVkZ2VyX2VudHJpZXOCAAVvcGF5bWVudF9pbnRlbnRzggAHZ3JlZnVuZHOCAAmYJmxhZGRyZXNzX2NpdHkAb2FkZHJlc3NfY291bnRyeQB4GWFkZHJlc3NfbGF0aXR1ZGVfbWljcm9kZWcAbWFkZHJlc3NfbGluZTEAbWFkZHJlc3NfbGluZTIAeBphZGRyZXNzX2xvbmdpdHVkZV9taWNyb2RlZwBzYWRkcmVzc19wb3N0YWxfY29kZQBtYWRkcmVzc19zdGF0ZQBtYW5vbnltaXplZF9hdABqY3JlYXRlZF9hdABlZW1haWwAYmlkAGxsYXN0X3VzZWRfYXQAaGxpdmVtb2RlAGttZXJjaGFudF9pZABkbmFtZQBlcGhvbmUAY3NlcQBqdXBkYXRlZF9hdACSZ2FjY291bnQAZmFtb3VudABoY3VycmVuY3kDbWN1cnJlbmN5X2NvZGUAaWRpcmVjdGlvbgBiaWQAa21lcmNoYW50X2lkAGt0cmFuc2FjdGlvbgZudHJhbnNhY3Rpb25faWQAimZjaGFyZ2UBaWNoYXJnZV9pZABqY3JlYXRlZF9hdABnZW50cmllc4IABWJpZACYLGZhbW91bnQAb2Ftb3VudF9yZWNlaXZlZAB1YW1vdW50X3JlZnVuZF9wZW5kaW5nAG9hbW91bnRfcmVmdW5kZWQAZ2NoYXJnZXOCAAFxY2hlY2tvdXRfc2Vzc2lvbnOCAAJ0Y2xpZW50X3NlY3JldF9zdWZmaXgAamNyZWF0ZWRfYXQAaGN1cnJlbmN5A21jdXJyZW5jeV9jb2RlAGhjdXN0b21lcgRrY3VzdG9tZXJfaWQAa2Rlc2NyaXB0aW9uAGJpZAB3bGFzdF9wYXltZW50X2Vycm9yX2NvZGUAeBpsYXN0X3BheW1lbnRfZXJyb3JfbWVzc2FnZQBobGl2ZW1vZGUAa21lcmNoYW50X2lkAGdyZWZ1bmRzggAJY3NlcQBmc3RhdHVzAGp1cGRhdGVkX2F0AJJnY2hhcmdlc4IAAWRjb2RlAHJkZWxpdmVyc19jYWxsYmFja3MAbGRpc3BsYXlfbmFtZQBnZW5hYmxlZABkZmxvdwB1cmVxdWlyZXNfaXBfYWxsb3dsaXN0AHgYc3VwcG9ydHNfcGFydGlhbF9yZWZ1bmRzAHBzdXBwb3J0c19yZWZ1bmRzAJggZmFtb3VudABmY2hhcmdlAWljaGFyZ2VfaWQAamNyZWF0ZWRfYXQAaGN1cnJlbmN5A21jdXJyZW5jeV9jb2RlAGxmYWlsdXJlX2NvZGUAa2ZhaWx1cmVfcmF3AGNmZWUAYmlkAG5wYXltZW50X2ludGVudAdxcGF5bWVudF9pbnRlbnRfaWQAdXByb3ZpZGVyX3JlZmVyZW5jZV9pZABmcmVhc29uAGZzdGF0dXMAanVwZGF0ZWRfYXQAkmNhbGcAamV4cGlyZXNfYXQAYmlkAGVsYWJlbABpcGFpcmVkX2F0AGpwdWJsaWNfa2V5AGpyZXZva2VkX2F0AG9zdGFmZl9tZW1iZXJfaWQAanRodW1icHJpbnQAlmdjb3VudGVyAGpjcmVhdGVkX2F0AGpleHBpcmVzX2F0AGJpZABmaXNzdWVyAGRraW5kAGhtYXRlcmlhbABrbXVzdF9jaGFuZ2UAb3N0YWZmX21lbWJlcl9pZABnc3ViamVjdABqdXBkYXRlZF9hdACGaWNsaWVudF9pZABrZGlzYWJsZWRfYXQAZnJlYXNvbgCEamV4cGlyZXNfYXQAYmlkAJBqY3JlYXRlZF9hdABsZmFub3V0X3N0YXRlAGJpZABobGl2ZW1vZGUAa21lcmNoYW50X2lkAGlvYmplY3RfaWQAY3NlcQBkdHlwZQCYGGZhbW91bnQAamNyZWF0ZWRfYXQAbWN1cnJlbmN5X2NvZGUAa2Rlc2NyaXB0aW9uAGJpZABqaW52b2ljZV9pZABobGl2ZW1vZGUAa21lcmNoYW50X2lkAGhxdWFudGl0eQBjc2VxAGt1bml0X2Ftb3VudABqdXBkYXRlZF9hdACYLGphbW91bnRfZHVlAGthbW91bnRfcGFpZABvYW1vdW50X3JlZnVuZGVkAHBhbW91bnRfcmVtYWluaW5nAGpjcmVhdGVkX2F0AG1jdXJyZW5jeV9jb2RlAGtjdXN0b21lcl9pZABrZGVzY3JpcHRpb24AaGR1ZV9kYXRlAGxmaW5hbGl6ZWRfYXQAYmlkAGhsaXZlbW9kZQB3bWFya2VkX3VuY29sbGVjdGlibGVfYXQAa21lcmNoYW50X2lkAGZudW1iZXIAZ3BhaWRfYXQAcHBhaWRfb3V0X29mX2JhbmQAcXBheW1lbnRfaW50ZW50X2lkAGNzZXEAZnN0YXR1cwBqdXBkYXRlZF9hdABpdm9pZGVkX2F0AJZmYW1vdW50AGpjcmVhdGVkX2F0AG1jdXJyZW5jeV9jb2RlAGJpZABqaW52b2ljZV9pZABobGl2ZW1vZGUAa21lcmNoYW50X2lkAGZtZXRob2QAcHBhaWRfb3V0X29mX2JhbmQAa3JlY2VpdmVkX2F0AGlyZWZlcmVuY2UAmBppY2xpZW50X2lkAG5jb2RlX2NoYWxsZW5nZQB1Y29kZV9jaGFsbGVuZ2VfbWV0aG9kAGljb2RlX2hhc2gAa2NvbnN1bWVkX2F0AGpjcmVhdGVkX2F0AGpleHBpcmVzX2F0AGttZXJjaGFudF9pZABlbm9uY2UAbHJlZGlyZWN0X3VyaQBlc2NvcGUAanNlc3Npb25faWQAaHN0YWZmX2lkAIxoYXR0ZW1wdHMAYmlkAGVzY29wZQBqdXBkYXRlZF9hdABxd2luZG93X2V4cGlyZXNfYXQAcXdpbmRvd19zdGFydGVkX2F0AJJqY3JlYXRlZF9hdABsZGlzcGxheV9uYW1lAGVlbWFpbABiaWQAaGlzX2FkbWluAG9sYXN0X3NpZ25faW5fYXQAa21lcmNoYW50X2lkAGZzdGF0dXMAanVwZGF0ZWRfYXQAkGxhY2Nlc3NfdG9rZW4Ad2FjY2Vzc190b2tlbl9leHBpcmVzX2F0AGpjcmVhdGVkX2F0AGpleHBpcmVzX2F0AGJpZABsbGFzdF9zZWVuX2F0AGhzdGFmZl9pZABlc3RhdGUAjm1jb2RlX3ZlcmlmaWVyAGpjcmVhdGVkX2F0AGpleHBpcmVzX2F0AGJpZABoaXNfcmV0cnkAam5vbmNlX2hhc2gAanN0YXRlX2hhc2gAlmpjcmVhdGVkX2F0AGtlbmRwb2ludF9pZABoZXZlbnRfaWQAYmlkAG9uZXh0X2F0dGVtcHRfYXQAbnBheWxvYWRfc2hhMjU2AGxyZXNwb25kZWRfYXQAcHJlc3BvbnNlX2V4Y2VycHQAZ3NlbnRfYXQAZXN0YXRlAGN1cmwAlGZhY3Rpb24AaGFjdG9yX2lkAGphY3Rvcl9raW5kAGJpZABrb2NjdXJyZWRfYXQAbG9wZXJhdGlvbl9pZABnb3V0Y29tZQBsdGFyZ2V0X2NsYXNzAGt0YXJnZXRfcmVwcgBmdGVuYW50AIRiaWQAb2lkZW1wb3RlbmN5X2tleQCEZGNvZGUAZ21lc3NhZ2UAhGRraW5kAG9yZWRpcmVjdF90b191cmwYHpgaZmFtb3VudABnY3JlYXRlZABoY3VycmVuY3kAaGN1c3RvbWVyAGtkZXNjcmlwdGlvbgBiaWQAcmxhc3RfcGF5bWVudF9lcnJvchgaaGxpdmVtb2RlAGhtZXRhZGF0YYIAGB9rbmV4dF9hY3Rpb24YG3ZwYXltZW50X21ldGhvZF9kZXRhaWxzGB10cGF5bWVudF9tZXRob2RfdHlwZXMAZnN0YXR1cwCEa21ldGhvZF90eXBlAGRyYWlsAIRqcmV0dXJuX3VybABjdXJsAIRja2V5AGV2YWx1ZQCCZGFyZ3MYGYRiaWQAb2lkZW1wb3RlbmN5X2tleQCSZmFtb3VudABnY3JlYXRlZABoY3VycmVuY3kAY2ZlZQBiaWQAaG1ldGFkYXRhggAYI25wYXltZW50X2ludGVudABmcmVhc29uAGZzdGF0dXMAhGNrZXkAZXZhbHVlAIJkYXJncxghimJpZABvaWRlbXBvdGVuY3lfa2V5AGxwYXllcl9maWVsZHOCABgsc3BheW1lbnRfbWV0aG9kX3R5cGUAanJldHVybl91cmwAhGRjb2RlAGdtZXNzYWdlAIRka2luZABvcmVkaXJlY3RfdG9fdXJsGCqYGmZhbW91bnQAZ2NyZWF0ZWQAaGN1cnJlbmN5AGhjdXN0b21lcgBrZGVzY3JpcHRpb24AYmlkAHJsYXN0X3BheW1lbnRfZXJyb3IYJmhsaXZlbW9kZQBobWV0YWRhdGGCABgra25leHRfYWN0aW9uGCd2cGF5bWVudF9tZXRob2RfZGV0YWlscxgpdHBheW1lbnRfbWV0aG9kX3R5cGVzAGZzdGF0dXMAhGttZXRob2RfdHlwZQBkcmFpbACEanJldHVybl91cmwAY3VybACEY2tleQBldmFsdWUAhGRuYW1lAGV2YWx1ZQCCZGFyZ3MYJY5mYW1vdW50AHJkZXN0aW5hdGlvbl9maWVsZHOCABgxcGRlc3RpbmF0aW9uX3R5cGUAb2lkZW1wb3RlbmN5X2tleQBobWV0YWRhdGGCABgwbnBheW1lbnRfaW50ZW50AGZyZWFzb24AkmZhbW91bnQAZ2NyZWF0ZWQAaGN1cnJlbmN5AGNmZWUAYmlkAGhtZXRhZGF0YYIAGDBucGF5bWVudF9pbnRlbnQAZnJlYXNvbgBmc3RhdHVzAIRja2V5AGV2YWx1ZQCEZG5hbWUAZXZhbHVlAIJkYXJncxguhGRjb2RlAGdtZXNzYWdlAIRka2luZABvcmVkaXJlY3RfdG9fdXJsGDeYGmZhbW91bnQAZ2NyZWF0ZWQAaGN1cnJlbmN5AGhjdXN0b21lcgBrZGVzY3JpcHRpb24AYmlkAHJsYXN0X3BheW1lbnRfZXJyb3IYM2hsaXZlbW9kZQBobWV0YWRhdGGCABg4a25leHRfYWN0aW9uGDR2cGF5bWVudF9tZXRob2RfZGV0YWlscxg2dHBheW1lbnRfbWV0aG9kX3R5cGVzAGZzdGF0dXMAhGttZXRob2RfdHlwZQBkcmFpbACEanJldHVybl91cmwAY3VybACEY2tleQBldmFsdWUAjmZhbW91bnQAaGN1cnJlbmN5AGhjdXN0b21lcgBrZGVzY3JpcHRpb24Ab2lkZW1wb3RlbmN5X2tleQBobWV0YWRhdGGCABg4dHBheW1lbnRfbWV0aG9kX3R5cGVzAIJkYXJncxg5gmJpZACIa2NyZWF0ZWRfZ3RlAGtjcmVhdGVkX2x0ZQBucGF5bWVudF9zdGF0dXMAZnN0YXR1cwCWamNyZWF0ZWRfYXQAa2N1c3RvbWVyX2lkAGpleHBpcmVzX2F0AGJpZABobGl2ZW1vZGUAa21lcmNoYW50X2lkAHFwYXltZW50X2ludGVudF9pZABucGF5bWVudF9zdGF0dXMAZnN0YXR1cwBndWlfbW9kZQBqdXBkYXRlZF9hdACEZHBhZ2UAZmZpbHRlchg8iGtjcmVhdGVkX2d0ZQBrY3JlYXRlZF9sdGUAZWVtYWlsAGVwaG9uZQCSamNyZWF0ZWRfYXQAZWVtYWlsAGJpZABsbGFzdF91c2VkX2F0AGhsaXZlbW9kZQBrbWVyY2hhbnRfaWQAZG5hbWUAZXBob25lAGp1cGRhdGVkX2F0AIRkcGFnZQBmZmlsdGVyGD+Ga2NyZWF0ZWRfZ3RlAGtjcmVhdGVkX2x0ZQBmc3RhdHVzAJgcZmFtb3VudABvYW1vdW50X3JlY2VpdmVkAHVhbW91bnRfcmVmdW5kX3BlbmRpbmcAb2Ftb3VudF9yZWZ1bmRlZABqY3JlYXRlZF9hdABtY3VycmVuY3lfY29kZQBrY3VzdG9tZXJfaWQAa2Rlc2NyaXB0aW9uAGJpZAB3bGFzdF9wYXltZW50X2Vycm9yX2NvZGUAaGxpdmVtb2RlAGttZXJjaGFudF9pZABmc3RhdHVzAGp1cGRhdGVkX2F0AIRkcGFnZQBmZmlsdGVyGEKGa2NyZWF0ZWRfZ3RlAGtjcmVhdGVkX2x0ZQBmc3RhdHVzAJgYZmFtb3VudABpY2hhcmdlX2lkAGpjcmVhdGVkX2F0AG1jdXJyZW5jeV9jb2RlAGxmYWlsdXJlX2NvZGUAY2ZlZQBiaWQAcXBheW1lbnRfaW50ZW50X2lkAHVwcm92aWRlcl9yZWZlcmVuY2VfaWQAZnJlYXNvbgBmc3RhdHVzAGp1cGRhdGVkX2F0AIRkcGFnZQBmZmlsdGVy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";
+
 export interface CratestackClientOptions {
   basePath?: string;
   fetch?: typeof fetch;
   headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
+  /** Opt in to compact wire keys: schema-declared fields travel as integer
+   *  keys (`application/vnd.cratestack.compact+json`). Default `false`, which
+   *  leaves the wire byte-identical to a client without the option. The
+   *  request body goes compact only after the op has answered compact once,
+   *  so an older server is never sent a body it cannot read. Loads the
+   *  optional peer `@cratestack/cbor` on first use; without it, or with a
+   *  release that predates `createCompactKeys`, the option is silently
+   *  inert. Error bodies stay named. */
+  compactKeys?: boolean;
+}
+
+/** Serializable request prepared before its first network attempt. */
+export interface PreparedCall {
+  version: 1;
+  method: string;
+  path: string;
+  url: string;
+  op: string;
+  contract: string;
+  keyTables: string;
+  headers: [string, string][];
+  body: string | null;
 }
 
 export interface CratestackRequestOptions {
@@ -182,10 +211,153 @@ export interface CratestackResponseEnvelope<T> {
   response: Response;
 }
 
+const RESERVED_ERROR_MEMBERS: ReadonlySet<string> = new Set(["code", "message", "details"]);
+
+/** The members of a decoded error body beyond `code`, `message` and
+ *  `details`: what an `AuthProvider` refusal adds (cratestack#1208), such
+ *  as `{ error: "attestation_expired" }`. Every member is kept, as decoded;
+ *  empty when `body` is not an object. */
+function extraErrorMembers(body: unknown): Readonly<Record<string, unknown>> {
+  const extra: Record<string, unknown> = {};
+  if (typeof body === "object" && body !== null && !Array.isArray(body)) {
+    for (const [name, value] of Object.entries(body)) {
+      if (!RESERVED_ERROR_MEMBERS.has(name)) {
+        extra[name] = value;
+      }
+    }
+  }
+  return Object.freeze(extra);
+}
+
+/** The answer's `WWW-Authenticate` value, raw and unparsed (cratestack#1243);
+ *  empty when there is none. `Headers` joins two challenge lines with `, `,
+ *  so they arrive as one entry holding both. */
+function challengesOf(headers: Headers | undefined): readonly string[] {
+  const value = headers?.get("www-authenticate");
+  return Object.freeze(value ? [value] : []);
+}
+
+/** The extra member `error` of a step-up refusal (RFC 9470, cratestack#1244). */
+export const INSUFFICIENT_USER_AUTHENTICATION = "insufficient_user_authentication";
+
+/** What a step-up refusal asks for (cratestack#1244): an operation that
+ *  requires a fresher or stronger authentication than the caller presented.
+ *  Each requirement is present only when the refused operation declares it. */
+export interface StepUpRequired {
+  /** The longest time, in seconds, since the caller last authenticated. */
+  readonly maxAge: number | undefined;
+  /** The authentication context classes the operation accepts. */
+  readonly acrValues: readonly string[];
+  /** The authentication methods the operation requires. */
+  readonly amr: readonly string[];
+  /** Which requirements the caller failed: a subset of `"max_age"`, `"acr"`
+   *  and `"amr"`. */
+  readonly unmet: readonly string[];
+}
+
+/** Reads a step-up refusal once the transport's own test (`refused`: a 401,
+ *  or `unauthenticated`) passed: `undefined` unless the extra member `error`
+ *  is `insufficient_user_authentication`. Never throws: a missing or
+ *  mistyped field reads as absent or empty. */
+function readStepUp(
+  refused: boolean,
+  details: unknown,
+  extra: Readonly<Record<string, unknown>>,
+): StepUpRequired | undefined {
+  if (!refused || extra["error"] !== INSUFFICIENT_USER_AUTHENTICATION) {
+    return undefined;
+  }
+  const map: Record<string, unknown> =
+    typeof details === "object" && details !== null && !Array.isArray(details)
+      ? (details as Record<string, unknown>)
+      : {};
+  const strings = (name: string): readonly string[] => {
+    const value = map[name];
+    return Object.freeze(
+      Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [],
+    );
+  };
+  const raw = map["max_age"];
+  const maxAge = typeof raw === "bigint" ? Number(raw) : raw;
+  return Object.freeze({
+    maxAge:
+      typeof maxAge === "number" && Number.isSafeInteger(maxAge) && maxAge >= 0
+        ? maxAge
+        : undefined,
+    acrValues: strings("acr_values"),
+    amr: strings("amr"),
+    unmet: strings("unmet"),
+  });
+}
+
+/** Runs `call`; when it fails with a step-up refusal, hands the refusal to
+ *  `reprove` and, when that resolves `true` (the user authenticated again),
+ *  runs `call` **once** more and returns what it gives, even a second
+ *  refusal. Never loops (cratestack#1244).
+ *
+ *  `reprove` resolves `false` when the user declined or the re-proof failed;
+ *  the first refusal is then rethrown. Any other error, and one `reprove`
+ *  itself throws, propagates as it is.
+ *
+ *  ```ts
+ *  const receipt = await retryAfterStepUp(
+ *    () => client.procedures.transfer(args),
+ *    (stepUp) => session.reauthenticate({ maxAge: stepUp.maxAge }),
+ *  );
+ *  ``` */
+export async function retryAfterStepUp<T>(
+  call: () => Promise<T>,
+  reprove: (stepUp: StepUpRequired) => Promise<boolean>,
+): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    const stepUp = stepUpOf(error);
+    if (stepUp === undefined || !(await reprove(stepUp))) {
+      throw error;
+    }
+  }
+  return call();
+}
+
+/** The error envelope a CrateStack server answers with. Mirrors
+ *  `cratestack_core::CratestackErrorResponse`; the members an
+ *  `AuthProvider` refusal adds beside these three are on
+ *  {@link CratestackHttpError.extra}. */
+export interface CratestackErrorResponse {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
+function isErrorResponse(payload: unknown): payload is CratestackErrorResponse {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    typeof (payload as { code?: unknown }).code === "string"
+  );
+}
+
+/** Thrown when the server answers with a non-2xx status. `payload` is the
+ *  whole decoded body; the envelope's members are typed beside it: `body`
+ *  (`code`, `message`, `details`), `extra` (every other member, as an
+ *  `AuthProvider` refusal adds them) and `challenges` (the
+ *  `WWW-Authenticate` value). */
 export class CratestackHttpError extends Error {
   readonly status: number;
   readonly response: Response;
   readonly payload: unknown;
+  /** The decoded envelope, or `undefined` when the payload is not one. */
+  readonly body: CratestackErrorResponse | undefined;
+  /** The envelope's `code` (`UNAUTHORIZED`, `FORBIDDEN`, ...). */
+  readonly code: string | undefined;
+  readonly details: unknown;
+  readonly extra: Readonly<Record<string, unknown>>;
+  readonly challenges: readonly string[];
+  /** The step-up refusal this answer is (cratestack#1244): a 401 whose
+   *  extra member `error` is `insufficient_user_authentication`, read from
+   *  `details`; `undefined` for any other error. */
+  readonly stepUp: StepUpRequired | undefined;
 
   constructor(response: Response, payload: unknown) {
     super(`CrateStack request failed with status ${response.status}`);
@@ -193,7 +365,19 @@ export class CratestackHttpError extends Error {
     this.status = response.status;
     this.response = response;
     this.payload = payload;
+    this.body = isErrorResponse(payload) ? payload : undefined;
+    this.code = this.body?.code;
+    this.details = this.body?.details;
+    this.extra = extraErrorMembers(this.body);
+    this.challenges = challengesOf(response.headers);
+    this.stepUp = readStepUp(this.status === 401, this.details, this.extra);
   }
+}
+
+/** The step-up refusal of a {@link CratestackHttpError} (its `stepUp`);
+ *  `undefined` for anything else (cratestack#1244). */
+export function stepUpOf(error: unknown): StepUpRequired | undefined {
+  return error instanceof CratestackHttpError ? error.stepUp : undefined;
 }
 
 export class CratestackRuntime {
@@ -201,9 +385,10 @@ export class CratestackRuntime {
   readonly basePath: string;
   readonly fetchFn: typeof fetch;
   readonly defaultHeaders: HeadersInit | (() => HeadersInit | Promise<HeadersInit>) | undefined;
+  private readonly compact: RestCompactSession | undefined;
 
   constructor(origin: string, options: CratestackClientOptions = {}) {
-    this.origin = origin.replace(/\/+$/, "");
+    this.origin = trimTrailingSlashes(origin);
     this.basePath = options.basePath ?? "/dash/v1";
     // `.bind(globalThis)`, not the bare global — some browsers' `fetch`
     // is spec'd to throw `TypeError: Illegal invocation` when called
@@ -215,6 +400,83 @@ export class CratestackRuntime {
     // supplied `options.fetch` is trusted to already be correctly bound.
     this.fetchFn = options.fetch ?? fetch.bind(globalThis);
     this.defaultHeaders = options.headers;
+    this.compact =
+      options.compactKeys === true
+        ? new RestCompactSession(KEY_TABLES, Object.keys(OP_CONTRACTS))
+        : undefined;
+  }
+
+  /** Prepare a keyed request for caller-owned durable storage before sending. */
+  async prepare(method: string, path: string, options: CratestackRequestOptions = {}): Promise<PreparedCall> {
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())) throw new Error("prepare requires a mutation");
+    const target = new URL(this.url(path, options.query));
+    if (target.username || target.password) throw new Error("prepared URL must not contain userinfo");
+    const headers = new Headers(await resolveHeaders(this.defaultHeaders));
+    for (const [key, value] of new Headers(options.headers)) headers.set(key, value);
+    if (!headers.get("Idempotency-Key")) throw new Error("prepare requires an Idempotency-Key");
+    const routes = this.compact ?? new RestCompactSession(KEY_TABLES, Object.keys(OP_CONTRACTS));
+    const op = routes.opOf(method, path);
+    const contract = op === undefined ? undefined : OP_CONTRACTS[op];
+    if (op === undefined || contract === undefined) throw new Error("unknown prepared route");
+    let body = options.body === undefined ? null : JSON.stringify(encodeBinaryAsJson(options.body));
+    headers.set("Accept", "application/json");
+    if (body !== null) headers.set("Content-Type", "application/json");
+    const compact = await this.compact?.begin(method, path, headers.get("Idempotency-Key") ?? undefined);
+    if (compact !== undefined) {
+      compact.applyHeaders(headers, body !== null);
+      if (body !== null) body = compact.encodeBody(body);
+    }
+    if (body !== null && new TextEncoder().encode(body).length > 8 * 1024 * 1024) throw new Error("prepared body too large");
+    for (const name of [...headers.keys()]) if (!["idempotency-key", "if-match", "accept", "content-type", "cratestack-contract"].includes(name)) headers.delete(name);
+    const prepared: PreparedCall = { version: 1, method: method.toUpperCase(), path, url: target.toString(), op, contract, keyTables: KEY_TABLES, headers: [...headers], body };
+    if (new TextEncoder().encode(JSON.stringify(prepared)).length > 16 * 1024 * 1024) throw new Error("prepared call too large");
+    return prepared;
+  }
+
+  async executePrepared<T>(prepared: PreparedCall, signal?: AbortSignal): Promise<T> {
+    const serialized = JSON.stringify(prepared);
+    if (new TextEncoder().encode(serialized).length > 16 * 1024 * 1024) throw new Error("prepared call too large");
+    prepared = JSON.parse(serialized) as PreparedCall;
+    if (Object.keys(prepared).sort().join(",") !== "body,contract,headers,keyTables,method,op,path,url,version" || prepared.version !== 1 ||
+      typeof prepared.method !== "string" || typeof prepared.path !== "string" || typeof prepared.url !== "string" ||
+      typeof prepared.op !== "string" || typeof prepared.contract !== "string" || prepared.contract !== OP_CONTRACTS[prepared.op] || prepared.keyTables !== KEY_TABLES ||
+      !Array.isArray(prepared.headers) || (prepared.body !== null && typeof prepared.body !== "string")) {
+      throw new Error("invalid or incompatible prepared call");
+    }
+    const target = new URL(prepared.url);
+    if (target.username || target.password) throw new Error("prepared URL must not contain userinfo");
+    if (prepared.body !== null) JSON.parse(prepared.body);
+    const names = new Set<string>();
+    for (const pair of prepared.headers) {
+      if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string" || typeof pair[1] !== "string") throw new Error("invalid prepared header");
+      const name = pair[0].toLowerCase();
+      if (names.has(name) || !["idempotency-key", "if-match", "accept", "content-type", "cratestack-contract"].includes(name) || new TextEncoder().encode(pair[1]).length > 8192) throw new Error("invalid prepared header");
+      names.add(name);
+    }
+    const routes = this.compact ?? new RestCompactSession(KEY_TABLES, Object.keys(OP_CONTRACTS));
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(prepared.method) || routes.opOf(prepared.method, prepared.path) !== prepared.op ||
+      this.url(prepared.path).split("?")[0] !== prepared.url.split("?")[0] ||
+      (prepared.body !== null && new TextEncoder().encode(prepared.body).length > 8 * 1024 * 1024)) throw new Error("invalid prepared route or body");
+    const saved = new Headers(prepared.headers);
+    if (!saved.get("Idempotency-Key")) throw new Error("invalid prepared key");
+    const headers = new Headers(await resolveHeaders(this.defaultHeaders));
+    if (SCHEMA_SHA256 !== "") headers.set(SCHEMA_SHA_HEADER, SCHEMA_SHA256);
+    for (const name of ["idempotency-key", "if-match", "accept", "content-type", "cratestack-contract"]) headers.delete(name);
+    for (const [key, value] of saved) headers.set(key, value);
+    const compact = await this.compact?.begin(prepared.method, prepared.path, headers.get("Idempotency-Key") ?? undefined);
+    if (headers.has("Cratestack-Contract") && compact === undefined) throw new Error("compact decoder unavailable");
+    const expected = new Headers();
+    if (compact !== undefined) compact.applyHeaders(expected, prepared.body !== null);
+    const contentType = saved.get("content-type");
+    if (saved.get("accept") !== (compact ? expected.get("accept") : "application/json") ||
+        saved.get("cratestack-contract") !== expected.get("cratestack-contract") ||
+        (prepared.body !== null && contentType !== "application/json" && contentType !== "application/vnd.cratestack.compact+json") ||
+        (contentType === "application/vnd.cratestack.compact+json" && compact === undefined)) throw new Error("invalid prepared media or selector");
+
+    const response = await this.fetchFn(prepared.url, { method: prepared.method, headers, body: prepared.body, signal: signal ?? null });
+    const payload = await readResponsePayload(response, compact);
+    if (!response.ok) throw new CratestackHttpError(response, payload);
+    return payload as T;
   }
 
   async request<T>(
@@ -241,6 +503,9 @@ export class CratestackRuntime {
     }
     headers.set("Accept", "application/json");
 
+    const effectiveHeaders = new Headers(headers);
+    for (const [key, value] of new Headers(options.headers)) effectiveHeaders.set(key, value);
+    const compact = await this.compact?.begin(method, path, effectiveHeaders.get("Idempotency-Key") ?? undefined);
     let body: BodyInit | undefined;
     if (options.body !== undefined) {
       headers.set("Content-Type", "application/json");
@@ -254,6 +519,12 @@ export class CratestackRuntime {
       // body is always JSON.
       body = JSON.stringify(encodeBinaryAsJson(options.body));
     }
+    if (compact !== undefined) {
+      compact.applyHeaders(headers, body !== undefined);
+      if (typeof body === "string") {
+        body = compact.encodeBody(body);
+      }
+    }
 
     for (const [key, value] of new Headers(options.headers)) {
       headers.set(key, value);
@@ -266,7 +537,11 @@ export class CratestackRuntime {
       signal: options.signal ?? null,
     });
 
-    const payload = await readResponsePayload(response);
+    if (!response.ok) {
+      // A `415` sends the op back to named bodies (see `./compact`).
+      compact?.noteFailure(response.status);
+    }
+    const payload = await readResponsePayload(response, compact);
     if (!response.ok) {
       throw new CratestackHttpError(response, payload);
     }
@@ -300,7 +575,7 @@ export class CratestackRuntime {
   }
 
   private url(path: string, query?: Record<string, unknown>): string {
-    const normalizedBase = this.basePath === "/" ? "" : this.basePath.replace(/\/+$/, "");
+    const normalizedBase = trimTrailingSlashes(this.basePath);
     const normalizedPath = path.startsWith("/") ? path : `/${path}`;
     const url = new URL(`${normalizedBase}${normalizedPath}`, `${this.origin}/`);
     appendQuery(url.searchParams, query);
@@ -317,7 +592,10 @@ async function resolveHeaders(
   return headers;
 }
 
-async function readResponsePayload(response: Response): Promise<unknown> {
+async function readResponsePayload(
+  response: Response,
+  compact?: RestCompactCall,
+): Promise<unknown> {
   if (response.status === 204) {
     return undefined;
   }
@@ -328,6 +606,14 @@ async function readResponsePayload(response: Response): Promise<unknown> {
   }
 
   const contentType = response.headers.get("Content-Type") ?? "";
+  // A compact body is transcoded back to plain JSON; an error body never is.
+  if (
+    compact !== undefined &&
+    response.ok &&
+    contentType.split(";", 1)[0]?.trim() === COMPACT_JSON_CONTENT_TYPE
+  ) {
+    return JSON.parse(compact.decodeResponse(text));
+  }
   if (contentType.includes("application/json")) {
     return JSON.parse(text);
   }
@@ -365,4 +651,12 @@ function appendQueryValue(searchParams: URLSearchParams, key: string, value: unk
   }
 
   searchParams.append(key, String(value));
+}
+
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) {
+    end--;
+  }
+  return value.slice(0, end);
 }

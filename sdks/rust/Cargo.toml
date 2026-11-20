@@ -101,6 +101,9 @@ axum.workspace = true
 # upstream, so the SDK is exercised against cratestack's own verifier and not
 # against a copy of its sealing code.
 cratestack-axum.workspace = true
+# Dev-only, for `tests/wire_golden.rs`: `oneshot` drives the real `EnvelopeLayer`
+# in-process, with no socket, so the audience and every byte stay fixed.
+tower.workspace = true
 
 # The live suite, off by default. `just sdk-live` (and CI's `e2e` job) turn it
 # on; nothing else compiles it, so `just verify-ignored`'s test-binary count is

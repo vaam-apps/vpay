@@ -20,7 +20,7 @@ workspace = true
 [dependencies]
 # `AcceptedContracts`, the type `EnvelopeLayer::builder` takes its contract
 # table as, and `find_contract`, the lookup the layer runs on it. Both
-# `=0.16.0` with the rest of the `cratestack-*` family (root `Cargo.toml`).
+# `=0.20.4` with the rest of the `cratestack-*` family (root `Cargo.toml`).
 cratestack-core.workspace = true
 # SHA-256 for `contract_digest`. The workspace pin (0.10); `cratestack-core`
 # brings 0.11 for its own digests, and the two never meet: a digest is bytes.

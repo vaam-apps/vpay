@@ -198,6 +198,7 @@ import type {
   AuditEventSortField,
   ConsoleKeySortField,
   Page,
+  CursorPage,
 } from "./models.js";
 import {
   toSearchQuery,

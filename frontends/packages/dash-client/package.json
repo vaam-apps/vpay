@@ -9,6 +9,10 @@
     ".": "./src/index.ts"
   },
   "peerDependencies": {
+    "@cratestack/cbor": ">=0.8.15 <0.21.0"
+  },
+  "peerDependenciesMeta": {
+    "@cratestack/cbor": { "optional": true }
   },
   "dependencies": {
     "decimal.js": "^10.6.0"

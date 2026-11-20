@@ -488,6 +488,9 @@ fn page_of(
             offset: Some(offset),
             has_next_page,
             has_previous_page: offset > 0,
+            // These hand-written searches page by offset; cratestack 0.20 added the
+            // keyset cursor, which is skipped on the wire while it is `None`.
+            next_cursor: None,
         },
     )
     .with_total_count(total_count))

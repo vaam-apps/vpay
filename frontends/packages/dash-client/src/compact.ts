@@ -1,0 +1,204 @@
+// Compact wire keys for the REST runtime (opt-in: `compactKeys: true` on
+// `CratestackClientOptions`; off, nothing here runs and the wire is the one
+// the runtime always spoke). JSON only: bodies travel as
+// `application/vnd.cratestack.compact+json`, integer keys written as
+// decimal strings.
+//
+// With the option on, a call advertises that it can read such a body
+// (`Accept: <compact type>, application/json` plus `Cratestack-Contract`,
+// the selector of this client's contract for the op), turns a compact
+// response back into plain JSON before parsing it, and — only once that op
+// has answered compact — sends its own request body compact too, so an
+// older server is never sent a body it cannot read. Error bodies stay named.
+//
+// The transcoder is `createCompactKeys` of `@cratestack/cbor`, an OPTIONAL
+// peer dependency loaded by a dynamic `import()` the first time it is
+// needed: if the package is absent, or its release predates the function,
+// the option is silently inert and the wire stays named.
+
+export const COMPACT_JSON_CONTENT_TYPE = "application/vnd.cratestack.compact+json";
+/** The header naming which contract digest an op's keys were numbered at. */
+export const CONTRACT_HEADER = "Cratestack-Contract";
+
+type Direction = "request" | "response";
+
+/** The subset of `@cratestack/cbor`'s `CompactKeys` this runtime calls. */
+export interface CompactKeys {
+  toCompactJson(named: string, op: string, direction: Direction): string;
+  fromCompactJson(compact: string, op: string, direction: Direction): string;
+  selector(op: string): string | undefined;
+}
+
+type CompactKeysFactory = (tables: Uint8Array) => Promise<CompactKeys>;
+
+/** What one request needs from the compact layer. */
+export interface RestCompactCall {
+  /** Overlays `Accept`, `Cratestack-Contract` and, when this op already
+   *  answered compact and the request has a body, the compact `Content-Type`. */
+  applyHeaders(headers: Headers, hasBody: boolean): void;
+  /** The JSON request body, transcoded when this op already answered compact. */
+  encodeBody(json: string): string;
+  /** A compact response body as plain JSON text; also records that this op
+   *  answers compact. */
+  decodeResponse(text: string): string;
+  /** The op's answer was an HTTP `status` that is not a body to read: a
+   *  `415` sends the op back to named bodies (see the implementation). */
+  noteFailure(status: number): void;
+}
+
+function bytesOfBase64(encoded: string): Uint8Array {
+  return Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+}
+
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) {
+    end--;
+  }
+  return value.slice(0, end);
+}
+
+interface RouteTemplate {
+  readonly op: string;
+  readonly method: string;
+  readonly segments: readonly string[];
+  readonly literals: number;
+}
+
+/** `"GET /widgets/{id}"` keys of `OP_CONTRACTS` as matchable route templates. */
+function routeTemplates(opKeys: readonly string[]): RouteTemplate[] {
+  const templates: RouteTemplate[] = [];
+  for (const op of opKeys) {
+    const space = op.indexOf(" ");
+    if (space < 0) {
+      continue;
+    }
+    const segments = op.slice(space + 1).split("/");
+    templates.push({
+      op,
+      method: op.slice(0, space),
+      segments,
+      literals: segments.filter((segment) => !segment.startsWith("{")).length,
+    });
+  }
+  return templates;
+}
+
+function matches(template: RouteTemplate, method: string, segments: readonly string[]): boolean {
+  return (
+    template.method === method &&
+    template.segments.length === segments.length &&
+    template.segments.every((part, index) => part.startsWith("{") || part === segments[index])
+  );
+}
+
+export class RestCompactSession {
+  private keys: Promise<CompactKeys | undefined> | undefined;
+  private readonly compactOps = new Set<string>();
+  private readonly encodingByIdempotencyKey = new Map<string, boolean>();
+  private readonly templates: RouteTemplate[];
+
+  constructor(
+    private readonly tablesBase64: string,
+    opKeys: readonly string[],
+  ) {
+    this.templates = routeTemplates(opKeys);
+  }
+
+  private resolveKeys(): Promise<CompactKeys | undefined> {
+    if (this.keys !== undefined) {
+      return this.keys;
+    }
+    const pending = (async (): Promise<CompactKeys | undefined> => {
+      let loaded: unknown;
+      try {
+        // @ts-ignore -- an optional peer: absent in an install that never turns `compactKeys` on
+        loaded = await import("@cratestack/cbor");
+      } catch {
+        return undefined;
+      }
+      const factory = (loaded as { createCompactKeys?: unknown } | null)?.createCompactKeys;
+      if (typeof factory !== "function") {
+        return undefined;
+      }
+      try {
+        return await (factory as CompactKeysFactory)(bytesOfBase64(this.tablesBase64));
+      } catch {
+        // Transient (e.g. the wasm asset): try again on the next call.
+        this.keys = undefined;
+        return undefined;
+      }
+    })();
+    this.keys = pending;
+    return pending;
+  }
+
+  /** The op a request is, by the route templates of `OP_CONTRACTS`; the
+   *  template with the most literal segments wins (`/widgets/search` over
+   *  `/widgets/{id}`). */
+  opOf(method: string, path: string): string | undefined {
+    const segments = trimTrailingSlashes(path.split("?", 1)[0] ?? "").split("/");
+    let best: RouteTemplate | undefined;
+    for (const template of this.templates) {
+      if (matches(template, method.toUpperCase(), segments) && (best === undefined || template.literals > best.literals)) {
+        best = template;
+      }
+    }
+    return best?.op;
+  }
+
+  /** The compact plan for one request, or `undefined` to stay named: no
+   *  binding, or a route the tables do not know. */
+  async begin(method: string, path: string, idempotencyKey?: string): Promise<RestCompactCall | undefined> {
+    const op = this.opOf(method, path);
+    if (op === undefined) {
+      return undefined;
+    }
+    const keys = await this.resolveKeys();
+    const selector = keys?.selector(op);
+    if (keys === undefined || selector === undefined) {
+      return undefined;
+    }
+    const remembered = idempotencyKey === undefined ? undefined : this.encodingByIdempotencyKey.get(idempotencyKey);
+    const sendCompact = remembered ?? this.compactOps.has(op);
+    if (idempotencyKey !== undefined && remembered === undefined) {
+      // A full table evicts the oldest first attempt (a `Map` keeps insertion
+      // order): a prompt retry stays pinned, and new keys keep negotiating.
+      if (this.encodingByIdempotencyKey.size >= 512) {
+        const oldest = this.encodingByIdempotencyKey.keys().next().value;
+        if (oldest !== undefined) this.encodingByIdempotencyKey.delete(oldest);
+      }
+      this.encodingByIdempotencyKey.set(idempotencyKey, sendCompact);
+    }
+    const compactOps = this.compactOps;
+    const pins = this.encodingByIdempotencyKey;
+    return {
+      applyHeaders(headers: Headers, hasBody: boolean): void {
+        headers.set("Accept", `${COMPACT_JSON_CONTENT_TYPE}, application/json`);
+        headers.set(CONTRACT_HEADER, selector);
+        if (sendCompact && hasBody) {
+          headers.set("Content-Type", COMPACT_JSON_CONTENT_TYPE);
+        }
+      },
+      encodeBody(json: string): string {
+        return sendCompact ? keys.toCompactJson(json, op, "request") : json;
+      },
+      decodeResponse(text: string): string {
+        compactOps.add(op);
+        return keys.fromCompactJson(text, op, "response");
+      },
+      noteFailure(status: number): void {
+        // A `415` is the server refusing the compact request type (it did not
+        // understand the integer keys): this op goes back to named bodies from
+        // the next call, and a retry under the same `Idempotency-Key` too.
+        // The call that got it is not retried here.
+        if (status === 415) {
+          compactOps.delete(op);
+          if (idempotencyKey !== undefined) {
+            pins.set(idempotencyKey, false);
+          }
+        }
+      },
+    };
+  }
+}

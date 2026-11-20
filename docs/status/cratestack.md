@@ -974,3 +974,94 @@ table, column or index changes, so `EXPECTED_DRIFT_CHANGES` stays **232** and
 `schema_migrates_cleanly_on_an_empty_database`'s number, which now pins **63**
 migrations. Evidence:
 [verification/2026-11-19-break-glass-bounds-and-audit.md](verification/2026-11-19-break-glass-bounds-and-audit.md).
+
+## CrateStack 0.16.0 → 0.20.4 (2026-11-19, issue #412)
+
+Moved together, in one change and with no transition path: the root
+`Cargo.toml`'s `cratestack` (`cratestack-pg`, features unchanged:
+`postgres`, `envelope`, `cose`, `mcp`), `cratestack-cose`, `-core`, `-parser`,
+`-axum`, `-client-rust`, `vpay-db`'s `cratestack-codec-json`, `justfile`'s
+`cratestack_version`, both `install-cratestack-cli` steps in
+`.github/workflows/ci.yml` (now `cbbae98c03979e21110df5b3514348baabdc1756`, the
+commit the lightweight tag `v0.20.4` points at), `Cargo.lock` (14 `cratestack-*`
+packages, all `0.20.4`; `grep 0.16.0 Cargo.lock` finds no CrateStack entry) and the
+dashboard's `@cratestack/refine` (`0.16.0` → `0.20.4`, `pnpm-lock.yaml`). The reason
+is `cratestack#1390` (0.20.2): every `cratestack-*` crate requires its siblings as
+`=x.y.z`, so a workspace on 0.20.4 that links a `vpay-sdk` on 0.16.0 gets two complete
+CrateStack trees (measured: a fixture on `=0.20.4` depending on the 0.16.0 SDK locks
+`cratestack-core` twice, `0.16.0` and `0.20.4`).
+
+**What the compiler asked for.** One thing: `cratestack_core::PageInfo` gained
+`next_cursor: Option<String>` (0.19.4, keyset pagination). The five hand-written
+searches in `vpay-db/src/schema/search_*.rs` build a `PageInfo` literal and now say
+`next_cursor: None`; the field is `skip_serializing_if = "Option::is_none"`, so an
+offset page is byte-identical on the wire. Nothing else in the workspace needed an
+edit, including the 0.20.0 removal of `HmacEnvelope`/`SealedEnvelope` (not used) and
+`CallBinding`'s new `payload_type`/`payload_accept` (not built by a literal here).
+
+**The generated dashboard client moved.** `cratestack generate-typescript` 0.20.4
+regenerates `frontends/packages/dash-client` with `uuidKeys` in its wire shapes, a
+`compact.ts` and an opt-in `compactKeys` runtime option (default off; with it off the
+wire is what it was), and a `@cratestack/cbor` peer range (`>=0.8.15 <0.21.0`) that
+the code loads by a dynamic `import()` only when `compactKeys` is on. Nothing here
+turns it on and the dashboard does not install `@cratestack/cbor`. `just check-schema`
+passes under 0.20.4 (33 model/enum declarations). The npm check:
+`sdks/nodejs` and `sdks/stripe-js` declare no `@cratestack/*` package (the Node SDK's
+sealing is `sdks/rust/wasm`, which is Rust and moved with the workspace);
+`frontends/apps/dashboard` took `@cratestack/refine`; `checkout` and `api-client` take none.
+
+### Wire compatibility of the `/v1` envelope: shown, both directions
+
+A live merchant is on a 0.16.0 SDK (or the Node SDK built from 0.16.0's
+sealing), and a live server is on 0.16.0. Measured, not assumed:
+
+- **Source, the trust path in two crates.** `cratestack-axum`'s `envelope_layer` is where
+  the server's checks live, and it did change: `signed.rs`, `unsigned.rs`, `dispatch.rs`,
+  `mode.rs`, `payload.rs` and `unresolved.rs` differ. Read against 0.16.0: the principal
+  mapping moved verbatim into `signed_principal::admit` (same coarse `401` for a refused
+  signer, same `500`s); `EnvelopeMode::UnsignedRequestSealedReply`, `@frames(unsigned)`
+  signed subscription opens and compact payload types are additions that `vpay-api` does
+  not select (it uses `Required` and `Optional`, with `unresolved_mode(Required)` as
+  before); `refusal`, `seal`, `contract` and `media` are unchanged. In
+  `cratestack-cose`, between the two tags `seal.rs`, `open.rs`, `tbs.rs`,
+  `wire.rs`, `aad.rs`, `alg.rs`, `thumbprint.rs` and `envelope/` are byte-identical,
+  `BINDING_VERSION` is unchanged, and the shared language-neutral vectors
+  (`tests/vectors/*.json`) are identical. What moved is additive (claim objects,
+  SPKI P-256 keys, compact payload types, signed subscription opens, which `/v1`
+  does not use). `replay.rs` differs by two comments; the nonce key and the
+  `iat + 2·skew + 1` expiry are the 0.16.0 ones, so `envelope_nonces` rows written by a
+  0.16.0 replica mean the same to a 0.20.4 replica during a rolling upgrade.
+- **Behaviour, through the real SDKs and layers.** A throwaway crate outside the repo
+  (`vpay-sdk` at `acafba2` on 0.16.0, this branch's on 0.20.4, `cratestack-axum` and
+  `-client-rust` under renamed keys at both versions) ran all four pairings of
+  {0.16.0, 0.20.4} client and server: a signed `GET /v1/events` and a signed
+  `POST /v1/customers` with a form body and an `Idempotency-Key` all succeeded, the
+  handler saw the same plain form request, and the SDK opened the sealed answer under
+  both pinned keys (`current` and `next`); an answer sealed by an unpinned key is
+  `Error::Unverified` in both mixed pairings.
+- **Refusals are identical, byte for byte, across all four pairings:** a replayed
+  request, a flipped byte, a seal bound to another audience, an unknown signer and
+  an unsigned request are the same unsigned coarse `401` body; a wrong contract
+  digest, and a request sealed for one route sent to another, are the same `426`.
+- **Bytes.** With every input pinned (seeds, clock, `cti`, audience, call), 0.16.0
+  and 0.20.4 produce the identical sealed request and the identical sealed answer.
+  That vector is now a permanent test, `sdks/rust/tests/wire_golden.rs` (7 tests): it
+  seals with CrateStack's client envelope and compares to the 0.16.0 bytes, opens the
+  0.16.0 request with its `EnvelopeLayer` and compares the answer, opens the
+  0.16.0 answer with its client, and refuses the same bytes on replay, outside
+  the 300 s skew (and accepts them at the edge), with a flipped payload byte and a
+  flipped signature byte (the handler never runs), from an unknown signer and
+  for another audience. **It drives CrateStack's `ClientEnvelope` and `EnvelopeLayer`
+  directly, not `vpay_sdk::Client::send_signed`, and not `vpay-api`'s router,
+  `PgNonceStore` or principal mapper**; those run in the SDK's and the workspace's
+  suites at 0.20.4 only. The identical file passes against CrateStack 0.16.0.
+  **If it fails after a later bump, the bump is a wire break; do not regenerate it.**
+
+Not shown here: a 0.16.0 SDK against the real `vpay-api` router over Postgres. The
+layer, resolver, payload types and policy match `vpay-api`'s, but the router, the
+`PgNonceStore` and the principal mapper are exercised only by the workspace's own
+integration suites at 0.20.4 (below).
+
+### What the gate ran
+
+See [verification/2026-11-19-cratestack-0.20.4.md](verification/2026-11-19-cratestack-0.20.4.md).
