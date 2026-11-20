@@ -1723,9 +1723,9 @@ async fn single_event_id(pool: &PgPool, object_id: &str) -> anyhow::Result<Strin
 async fn insert_live_charge(pool: &PgPool, intent_id: &str) -> anyhow::Result<()> {
     sqlx::query(
         "INSERT INTO charges \
-            (id, payment_intent_id, provider_code, provider_reference_id, state, amount, \
-             currency_code) \
-         VALUES ($1, $2, 'mtn_momo', $3, 'submitting', 5000, 'XAF')",
+            (id, payment_intent_id, provider_code, provider_account_id, provider_reference_id, \
+             state, amount, currency_code) \
+         VALUES ($1, $2, 'mtn_momo', 'default', $3, 'submitting', 5000, 'XAF')",
     )
     .bind(format!("ch_{}", uuid::Uuid::new_v4().simple()))
     .bind(intent_id)
@@ -1763,6 +1763,7 @@ fn cancel_config(base_url: &str, jwks_a: Value, receiver_url: &str) -> Config {
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![vpay_config::ProviderHost {
             code: "mtn_momo".to_owned(),
@@ -2054,6 +2055,7 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: Vec::new(),
         currencies: vec![CurrencyEntry {

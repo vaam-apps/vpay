@@ -673,6 +673,23 @@ impl RailConfig {
         self.provider_config.currency
     }
 
+    /// Resolves the [`ProviderConfig`] for an existing charge's
+    /// `provider_account_id` (RFC-0009 § 3).
+    ///
+    /// # Errors
+    /// [`vpay_provider::ProviderError::Config`] if `provider_account_id` is
+    /// not configured on this rail, never falling back.
+    pub fn provider_config_for_account(
+        &self,
+        provider_account_id: &str,
+    ) -> Result<&ProviderConfig, vpay_provider::ProviderError> {
+        vpay_provider::resolve_account_config(
+            &self.code,
+            provider_account_id,
+            Some(&self.provider_config),
+        )
+    }
+
     /// The [`ProviderConfig`] handed to `ProviderAdapter::submit`.
     ///
     /// # What changed in Step 3, and what it means
@@ -1516,6 +1533,7 @@ mod tests {
                 livemode: false,
                 public_base_url: "https://api.vpay.test/".to_owned(),
                 surfaces: None,
+                legal_entity: None,
             },
             providers: vec![
                 ProviderHost {

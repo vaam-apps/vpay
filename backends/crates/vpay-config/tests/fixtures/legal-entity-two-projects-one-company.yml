@@ -1,0 +1,37 @@
+# Fixture for `two_projects_of_one_legal_entity_boot`
+# (backends/crates/vpay-config/src/config.rs, RFC-0009 § 6).
+#
+# Two distinct `merchant_id`s that both claim the deployment's `legal_entity`
+# (`acme-sarl`) boot cleanly on Phase A configuration.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+  legal_entity:
+    id: acme-sarl
+    name: ACME SARL
+
+merchant_clients:
+  - client_id: shop-web
+    merchant_id: shop
+    legal_entity: acme-sarl
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+  - client_id: events-web
+    merchant_id: events
+    legal_entity: acme-sarl
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k2
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]

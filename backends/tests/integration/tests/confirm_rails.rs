@@ -287,6 +287,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![
             ProviderHost {
@@ -3645,5 +3646,140 @@ async fn a_type_this_deployment_cannot_take_is_a_400_naming_the_parameter() -> a
     assert_eq!(charge_count(&harness.pool, &intent.id).await?, 0);
 
     harness.shutdown().await;
+    Ok(())
+}
+
+/// RFC-0009 § 5 (Phase A): two `merchant_id`s sharing one `legal_entity` boot,
+/// take a payment for each, and record `provider_account_id = 'default'` and
+/// each merchant's own `merchant_id`.
+#[tokio::test]
+async fn two_merchants_of_one_legal_entity_record_default_provider_account_id() -> anyhow::Result<()>
+{
+    const CLIENT_B: &str = "confirm-rails-b";
+    const MERCHANT_B: &str = "merchant-confirm-rails-b";
+    const PK_B: &str = "pk_test_confirmrailsmerchantb1";
+
+    ensure_crypto_provider_installed();
+
+    let (_postgres, repositories, pool) = migrated_postgres().await?;
+    let mtn = vpay_testkit::containers::start_wiremock(&mappings_dir("mtn"))
+        .await
+        .context("the MTN stub container starts")?;
+    let orange = vpay_testkit::containers::start_wiremock(&mappings_dir("orange"))
+        .await
+        .context("the Orange stub container starts")?;
+
+    let mtn_url = format!(
+        "http://127.0.0.1:{}",
+        mtn.get_host_port_ipv4(8080)
+            .await
+            .context("the MTN stub's mapped port")?
+    );
+    let orange_origin = format!(
+        "http://127.0.0.1:{}",
+        orange
+            .get_host_port_ipv4(8080)
+            .await
+            .context("the Orange stub's mapped port")?
+    );
+    let orange_url = format!("{orange_origin}/orange-money-webpay/dev");
+
+    let (server_pem, _server_jwks) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
+    let (_pem_b, jwks_b) = generate_key();
+
+    let mtn_setup = RailSetup::working(&mtn_url);
+    let orange_setup = RailSetup::working(&orange_url);
+    let jwks_a_for_server = jwks_a.clone();
+    let jwks_b_for_server = jwks_b.clone();
+    let served = serve(&repositories, &server_pem, |base_url| {
+        let mut config = config_with(base_url, jwks_a_for_server, &mtn_setup, &orange_setup);
+        config.deployment.legal_entity = Some(vpay_config::LegalEntity {
+            id: "acme-sarl".to_owned(),
+            name: Some("ACME SARL".to_owned()),
+        });
+        if let Some(first) = config.merchant_clients.first_mut() {
+            first.legal_entity = Some("acme-sarl".to_owned());
+        }
+        let mut second =
+            merchant_client_with_publishable_keys(CLIENT_B, MERCHANT_B, jwks_b_for_server, &[PK_B]);
+        second.legal_entity = Some("acme-sarl".to_owned());
+        config.merchant_clients.push(second);
+        config
+    })
+    .await?;
+
+    let client_a = vpay_sdk::Client::builder(&served.base_url)
+        .credentials(support::sealed::sdk_credentials(CLIENT_A))
+        .server_keys(support::sealed::sdk_server_keys())
+        .build()?;
+    let client_b = vpay_sdk::Client::builder(&served.base_url)
+        .credentials(support::sealed::sdk_credentials(CLIENT_B))
+        .server_keys(support::sealed::sdk_server_keys())
+        .build()?;
+
+    let intent_a = client_a
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::MtnMomo),
+            RequestOptions::new(),
+        )
+        .await?;
+    let confirmed_a = client_a
+        .payment_intents()
+        .confirm(
+            &intent_a.id,
+            ConfirmPaymentIntentParams::mtn_momo(MSISDN),
+            RequestOptions::new(),
+        )
+        .await?;
+    assert_eq!(confirmed_a.status, IntentStatus::Processing);
+
+    let intent_b = client_b
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::MtnMomo),
+            RequestOptions::new(),
+        )
+        .await?;
+    let confirmed_b = client_b
+        .payment_intents()
+        .confirm(
+            &intent_b.id,
+            ConfirmPaymentIntentParams::mtn_momo(MSISDN),
+            RequestOptions::new(),
+        )
+        .await?;
+    assert_eq!(confirmed_b.status, IntentStatus::Processing);
+
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT pi.merchant_id, c.provider_code, c.provider_account_id \
+         FROM charges c \
+         JOIN payment_intents pi ON pi.id = c.payment_intent_id \
+         WHERE pi.id IN ($1, $2) \
+         ORDER BY pi.created_at",
+    )
+    .bind(&intent_a.id)
+    .bind(&intent_b.id)
+    .fetch_all(&pool)
+    .await?;
+
+    assert_eq!(
+        rows,
+        vec![
+            (
+                MERCHANT_A.to_owned(),
+                PUSH_RAIL.to_owned(),
+                vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
+            ),
+            (
+                MERCHANT_B.to_owned(),
+                PUSH_RAIL.to_owned(),
+                vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
+            ),
+        ]
+    );
+
+    served.server.abort();
     Ok(())
 }

@@ -448,9 +448,9 @@ mod tests {
         .context("seeding the payment intent")?;
         sqlx::query(
             "INSERT INTO charges \
-                (id, payment_intent_id, provider_code, provider_reference_id, state, amount, \
-                 currency_code) \
-             VALUES ($1, $2, 'mtn_momo', gen_random_uuid(), 'submitting', 20000, 'XAF')",
+                (id, payment_intent_id, provider_code, provider_account_id, provider_reference_id, \
+                 state, amount, currency_code) \
+             VALUES ($1, $2, 'mtn_momo', 'default', gen_random_uuid(), 'submitting', 20000, 'XAF')",
         )
         .bind(charge_id)
         .bind(intent_id)

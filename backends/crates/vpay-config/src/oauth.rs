@@ -574,6 +574,13 @@ pub struct MerchantClient {
     #[garde(skip)]
     #[serde(default)]
     pub invoices: InvoiceDefaults,
+    /// The legal entity this merchant belongs to (RFC-0009 § 6).
+    ///
+    /// Required to match `deployment.legal_entity.id` when two or more
+    /// distinct `merchant_id`s are configured on one deployment.
+    #[garde(length(min = 1))]
+    #[serde(default)]
+    pub legal_entity: Option<String>,
 }
 
 /// One merchant's defaults for the two URLs
@@ -641,6 +648,7 @@ impl fmt::Debug for MerchantClient {
         f.debug_struct("MerchantClient")
             .field("client_id", &self.client_id)
             .field("merchant_id", &self.merchant_id)
+            .field("legal_entity", &self.legal_entity)
             // In full: it is rendered to every payer of this merchant by
             // construction, so there is nothing here to hide, and "which
             // name did this deployment load?" is what an operator asks when
@@ -924,6 +932,7 @@ mod tests {
             }],
             publishable_keys: vec!["pk_test_visibleonpurpose01".to_owned()],
             checkout_origins: Vec::new(),
+            legal_entity: None,
         };
 
         let formatted = format!("{client:?}");

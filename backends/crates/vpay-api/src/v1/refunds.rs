@@ -562,6 +562,7 @@ async fn resolve_target<'a>(
                 ApiError::Internal("privacy controls not configured".to_owned())
             })?;
 
+        let account_config = rail.provider_config_for_account(&charge.provider_account_id)?;
         verify_registered_holder(
             repositories,
             scope,
@@ -571,7 +572,7 @@ async fn resolve_target<'a>(
             adapter.as_ref(),
             &charge.provider_code,
             destination,
-            &rail.provider_config(),
+            account_config,
         )
         .await?;
     }
@@ -1028,14 +1029,12 @@ async fn refund_at_rail(
         "instructing a rail to return money"
     );
 
+    let config = target
+        .rail
+        .provider_config_for_account(&target.charge.provider_account_id)?;
     target
         .adapter
-        .refund(
-            &charge_ref,
-            amount,
-            target.destination.as_ref(),
-            &target.rail.provider_config(),
-        )
+        .refund(&charge_ref, amount, target.destination.as_ref(), config)
         .await
 }
 

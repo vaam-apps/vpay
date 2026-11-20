@@ -147,6 +147,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![ProviderHost {
             code: RAIL.to_owned(),
@@ -1846,10 +1847,10 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
         .await
         .expect("an intent for this customer");
     sqlx::query(
-        "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
-         state, amount, currency_code, payer_ref, payer_ref_masked, failure_code, \
-         failure_raw) \
-         VALUES ('ch_scanner00000000000000', $1, $2, gen_random_uuid(), 'failed', $3, \
+        "INSERT INTO charges (id, payment_intent_id, provider_code, provider_account_id, \
+         provider_reference_id, state, amount, currency_code, payer_ref, payer_ref_masked, \
+         failure_code, failure_raw) \
+         VALUES ('ch_scanner00000000000000', $1, $2, 'default', gen_random_uuid(), 'failed', $3, \
                  'XAF', $4, $5, 'invalid_payer', $6)",
     )
     .bind(&intent.id)
@@ -2267,10 +2268,10 @@ async fn stage_payment(
 
     let charge = format!("ch_{}", uuid::Uuid::new_v4().simple());
     sqlx::query(
-        "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
-         state, amount, currency_code, payer_ref, payer_ref_masked, failure_code, \
-         failure_raw) \
-         VALUES ($1, $2, $3, gen_random_uuid(), 'failed', $4, 'XAF', $5, $6, \
+        "INSERT INTO charges (id, payment_intent_id, provider_code, provider_account_id, \
+         provider_reference_id, state, amount, currency_code, payer_ref, payer_ref_masked, \
+         failure_code, failure_raw) \
+         VALUES ($1, $2, $3, 'default', gen_random_uuid(), 'failed', $4, 'XAF', $5, $6, \
                  'invalid_payer', $7)",
     )
     .bind(&charge)

@@ -114,6 +114,16 @@ noticeably from Stripe's ergonomics, and it is deliberate.
 
 ## Status
 
+**Updated 2026-11-20: every charge records `provider_account_id` (issue #290 Phase A2).**
+The lifecycle did not change. Migration `0064` adds `charges.provider_account_id`
+(backfilled to `'default'`, then `DROP DEFAULT` so every `INSERT` writes it
+explicitly). `insert_for_intent` writes `vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID`
+(`default`) before any rail call, and `submit`, `query_status`, and `refund`
+resolve the configuration from `(provider_code, provider_account_id)` via
+`vpay_provider::resolve_account_config`. See
+[../status/backend.md](../status/backend.md) and
+[verification](../status/verification/2026-11-20-provider-account-id.md).
+
 **Updated 2026-11-17: a push charge carries its payer's mask (issue #79).**
 The lifecycle did not change. The charge insert that opens a confirm's one
 charge now writes `payer_ref_masked` beside `payer_ref` — `+237••••67`, the

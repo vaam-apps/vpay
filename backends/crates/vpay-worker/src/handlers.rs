@@ -366,7 +366,13 @@ async fn poll_charge(
         return Ok(Outcome::Done);
     }
 
-    let (adapter, config) = rail(rails, adapters, job, &charge.provider_code)?;
+    let (adapter, config) = rail(
+        rails,
+        adapters,
+        job,
+        &charge.provider_code,
+        &charge.provider_account_id,
+    )?;
     let flow = adapter.capabilities().flow;
     // **Postgres' clock, not this host's**, and every duration below is
     // measured against it. `charges.created_at` and `jobs.run_at` are written
@@ -886,7 +892,13 @@ async fn resubmit_charge(
         return Ok(Outcome::Done);
     }
 
-    let (adapter, config) = rail(rails, adapters, job, &charge.provider_code)?;
+    let (adapter, config) = rail(
+        rails,
+        adapters,
+        job,
+        &charge.provider_code,
+        &charge.provider_account_id,
+    )?;
     let (attempt, prior) = next_submit_attempt(repositories, &charge).await?;
     // A two-step rail's reference, committed before the prompt (ADR-0032):
     // `prepare` runs only for a charge that holds no key material yet, so a
@@ -2576,6 +2588,7 @@ fn rail<'a>(
     adapters: &'a Adapters,
     job: &vpay_db::JobRow,
     code: &str,
+    provider_account_id: &str,
 ) -> Result<(&'a dyn ProviderAdapter, &'a ProviderConfig), JobError> {
     let adapter = adapters.get(code).ok_or_else(|| {
         ProviderError::Config(format!(
@@ -2583,12 +2596,7 @@ fn rail<'a>(
             job.id
         ))
     })?;
-    let config = rails.get(code).ok_or_else(|| {
-        ProviderError::Config(format!(
-            "job {} names rail `{code}`, which this deployment has no configuration for",
-            job.id
-        ))
-    })?;
+    let config = vpay_provider::resolve_account_config(code, provider_account_id, rails.get(code))?;
     Ok((adapter.as_ref(), config))
 }
 
@@ -2725,6 +2733,7 @@ mod tests {
             id: "ch_horizon".to_owned(),
             payment_intent_id: "pi_horizon".to_owned(),
             provider_code: "mtn_momo".to_owned(),
+            provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
             provider_reference_id: uuid::Uuid::nil(),
             provider_ref_extra: None,
             provider_txn_id: None,

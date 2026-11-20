@@ -1497,6 +1497,7 @@ async fn open_charge(
             id: ids::charge_id(),
             payment_intent_id: intent.id.clone(),
             provider_code: target.code.to_owned(),
+            provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
             provider_reference_id: reference,
             provider_ref_extra: None,
             // Nothing a rail said, because nothing has been asked yet. The
@@ -1591,13 +1592,12 @@ async fn prepare_on_rail(
         ref_extra: RefExtra::new(),
         return_url: charge.return_url.clone(),
     };
+    let account_config = target
+        .rail
+        .provider_config_for_account(&charge.provider_account_id)?;
     match target
         .adapter
-        .prepare(
-            &charge_ref,
-            &target.rail.provider_config(),
-            PriorSubmits::None,
-        )
+        .prepare(&charge_ref, account_config, PriorSubmits::None)
         .await
     {
         Ok(ref_extra) => {
@@ -1692,10 +1692,10 @@ async fn submit_to_rail(
         ref_extra,
         return_url,
     };
-    target
-        .adapter
-        .submit(&charge_ref, &target.rail.provider_config())
-        .await
+    let config = target
+        .rail
+        .provider_config_for_account(&attempt.charge.provider_account_id)?;
+    target.adapter.submit(&charge_ref, config).await
 }
 
 /// Step 6: what came back, in the three shapes
@@ -3392,6 +3392,7 @@ mod tests {
                 livemode: false,
                 public_base_url: "https://api.vpay.test".to_owned(),
                 surfaces: None,
+                legal_entity: None,
             },
             providers: vec![
                 ProviderHost {
@@ -4379,6 +4380,7 @@ mod tests {
             id: ids::charge_id(),
             payment_intent_id: ids::payment_intent_id(),
             provider_code: "orange_money".to_owned(),
+            provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
             provider_reference_id: Uuid::nil(),
             provider_ref_extra: None,
             // Migration 0021's column: only the settlement transaction ever

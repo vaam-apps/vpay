@@ -154,6 +154,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![ProviderHost {
             code: RAIL.to_owned(),
@@ -2071,9 +2072,9 @@ impl RailHarness {
 
         sqlx::query(
             "INSERT INTO charges \
-                 (id, payment_intent_id, provider_code, provider_reference_id, state, amount, \
-                  currency_code, payer_ref, provider_txn_id) \
-             VALUES ($1, $2, $3, $4, 'succeeded', $5, 'XAF', $6, $7)",
+                 (id, payment_intent_id, provider_code, provider_account_id, \
+                  provider_reference_id, state, amount, currency_code, payer_ref, provider_txn_id) \
+             VALUES ($1, $2, $3, 'default', $4, 'succeeded', $5, 'XAF', $6, $7)",
         )
         .bind(vpay_core::ids::charge_id())
         .bind(intent_id)
@@ -2340,6 +2341,7 @@ fn rail_config(
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![
             ProviderHost {
@@ -2627,6 +2629,7 @@ fn origin_config(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![ProviderHost {
             code: ORIGIN_RAIL.to_owned(),

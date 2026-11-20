@@ -280,6 +280,7 @@ fn config_with(base_url: &str, jwks: [Value; 4], surfaces: Option<Vec<String>>) 
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces,
+            legal_entity: None,
         },
         providers: vec![rail("mtn_momo")],
         currencies: vec![CurrencyEntry {

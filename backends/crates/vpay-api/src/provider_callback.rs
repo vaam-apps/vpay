@@ -621,6 +621,7 @@ mod tests {
             id: "ch_test".to_owned(),
             payment_intent_id: "pi_test".to_owned(),
             provider_code: "declaring".to_owned(),
+            provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
             provider_reference_id: uuid::Uuid::nil(),
             provider_ref_extra: None,
             provider_txn_id: None,
@@ -718,6 +719,7 @@ mod tests {
             livemode: false,
             public_base_url: "https://api.vpay.test".to_owned(),
             surfaces: None,
+            legal_entity: None,
         };
         let host = vpay_config::ProviderHost {
             code: "mtn_momo".to_owned(),

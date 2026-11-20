@@ -88,9 +88,9 @@ pub(crate) fn record_transition(provider_code: &str, from: &str, to: &str) {
 /// second column list there would let the two drift on what
 /// [`ChargeRow`] decodes — the exact failure a shared constant exists to
 /// prevent.
-pub(crate) const COLUMNS: &str = "id, payment_intent_id, provider_code, provider_reference_id, \
-                       provider_ref_extra, provider_txn_id, redirect_url, return_url, \
-                       state, amount, currency_code, payer_ref, payer_ref_masked, \
+pub(crate) const COLUMNS: &str = "id, payment_intent_id, provider_code, provider_account_id, \
+                       provider_reference_id, provider_ref_extra, provider_txn_id, redirect_url, \
+                       return_url, state, amount, currency_code, payer_ref, payer_ref_masked, \
                        failure_code, failure_raw, method_type, created_at, updated_at";
 
 /// One `charges` row, exactly as stored.
@@ -103,6 +103,9 @@ pub struct ChargeRow {
     pub payment_intent_id: String,
     /// The rail that was chosen, e.g. `mtn_momo`.
     pub provider_code: String,
+    /// The provider account used for this charge (RFC-0009 § 3, migration
+    /// `0064`). Phase A always records `default`.
+    pub provider_account_id: String,
     /// The reference generated *before* the first network call and sent to
     /// the rail as its idempotency key (`vpay_provider::ChargeRef`).
     pub provider_reference_id: Uuid,
@@ -186,6 +189,7 @@ impl fmt::Debug for ChargeRow {
             .field("id", &self.id)
             .field("payment_intent_id", &self.payment_intent_id)
             .field("provider_code", &self.provider_code)
+            .field("provider_account_id", &self.provider_account_id)
             .field("provider_reference_id", &self.provider_reference_id)
             .field(
                 "provider_ref_extra",
@@ -278,6 +282,9 @@ pub struct NewCharge {
     pub payment_intent_id: String,
     /// The rail this charge goes to. Must exist in `providers`.
     pub provider_code: String,
+    /// The provider account used for this charge (RFC-0009 § 3). Phase A
+    /// always writes `vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID` (`default`).
+    pub provider_account_id: String,
     /// The rail-facing reference, generated before the write and never
     /// regenerated for the same charge (`docs/flows/crash-safety.md`).
     pub provider_reference_id: Uuid,
@@ -321,6 +328,7 @@ impl fmt::Debug for NewCharge {
             .field("id", &self.id)
             .field("payment_intent_id", &self.payment_intent_id)
             .field("provider_code", &self.provider_code)
+            .field("provider_account_id", &self.provider_account_id)
             .field("provider_reference_id", &self.provider_reference_id)
             .field(
                 "provider_ref_extra",
@@ -387,10 +395,10 @@ pub(crate) async fn insert_for_intent(
     new: &NewCharge,
 ) -> Result<ChargeRow, DbError> {
     let sql = format!(
-        "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
-         provider_ref_extra, redirect_url, return_url, state, amount, currency_code, payer_ref, \
-         payer_ref_masked, method_type) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+        "INSERT INTO charges (id, payment_intent_id, provider_code, provider_account_id, \
+         provider_reference_id, provider_ref_extra, redirect_url, return_url, state, amount, \
+         currency_code, payer_ref, payer_ref_masked, method_type) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
          RETURNING {COLUMNS}"
     );
 
@@ -398,6 +406,7 @@ pub(crate) async fn insert_for_intent(
         .bind(&new.id)
         .bind(&new.payment_intent_id)
         .bind(&new.provider_code)
+        .bind(&new.provider_account_id)
         .bind(new.provider_reference_id)
         .bind(new.provider_ref_extra.as_ref())
         .bind(new.redirect_url.as_deref())
@@ -919,6 +928,7 @@ mod tests {
             id: "ch_fixture".to_owned(),
             payment_intent_id: "pi_fixture".to_owned(),
             provider_code: "mtn_momo".to_owned(),
+            provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
             provider_reference_id: Uuid::new_v4(),
             provider_ref_extra: Some(serde_json::json!({ "pay_token": PAY_TOKEN })),
             provider_txn_id: None,
@@ -942,6 +952,7 @@ mod tests {
             id: "ch_fixture".to_owned(),
             payment_intent_id: "pi_fixture".to_owned(),
             provider_code: "mtn_momo".to_owned(),
+            provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
             provider_reference_id: Uuid::new_v4(),
             provider_ref_extra: Some(serde_json::json!({ "pay_token": PAY_TOKEN })),
             redirect_url: Some(REDIRECT_URL.to_owned()),

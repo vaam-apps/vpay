@@ -224,6 +224,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value, dashboard: bool) ->
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![ProviderHost {
             code: PUSH_RAIL.to_owned(),
@@ -525,6 +526,7 @@ async fn the_detail_read_carries_the_charge_and_never_the_client_secret() -> any
                     id: charge_id,
                     payment_intent_id: "pi_dash_detail".to_owned(),
                     provider_code: PUSH_RAIL.to_owned(),
+                    provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
                     provider_reference_id: uuid::Uuid::new_v4(),
                     provider_ref_extra: None,
                     redirect_url: None,
@@ -714,6 +716,7 @@ async fn the_detail_read_renders_the_timeline_and_the_refunds_it_has() -> anyhow
                     id: charge_id.clone(),
                     payment_intent_id: "pi_dash_timeline".to_owned(),
                     provider_code: PUSH_RAIL.to_owned(),
+                    provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
                     provider_reference_id: uuid::Uuid::new_v4(),
                     provider_ref_extra: None,
                     redirect_url: None,

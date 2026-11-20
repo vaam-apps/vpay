@@ -330,6 +330,7 @@ pub(crate) fn merchant_client_with(
         // the `400` naming both parameters.
         // `merchant_client_with_invoice_urls` is how a suite opts in.
         invoices: vpay_config::InvoiceDefaults::default(),
+        legal_entity: None,
     }
 }
 
@@ -772,6 +773,7 @@ pub(crate) async fn crashed_charge(
                     id: id.clone(),
                     payment_intent_id: payment_intent_id.to_owned(),
                     provider_code: rail.to_owned(),
+                    provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
                     provider_reference_id: reference,
                     provider_ref_extra: None,
                     redirect_url: None,

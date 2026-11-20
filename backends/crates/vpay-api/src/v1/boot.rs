@@ -947,6 +947,7 @@ mod tests {
                 livemode: false,
                 public_base_url: "http://localhost:8080".to_owned(),
                 surfaces: None,
+                legal_entity: None,
             },
             providers: codes
                 .iter()

@@ -941,6 +941,7 @@ mod tests {
                 livemode: false,
                 public_base_url: "http://localhost:8080".to_owned(),
                 surfaces: None,
+                legal_entity: None,
             },
             providers: vec![ProviderHost {
                 code: RAIL.to_owned(),
@@ -1533,6 +1534,7 @@ mod tests {
                 livemode: false,
                 public_base_url: "http://localhost:8080".to_owned(),
                 surfaces: None,
+                legal_entity: None,
             },
             providers: vec![ProviderHost {
                 code: RAIL.to_owned(),
