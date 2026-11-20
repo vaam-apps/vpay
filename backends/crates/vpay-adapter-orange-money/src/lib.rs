@@ -1476,6 +1476,43 @@ mod tests {
         }
     }
 
+    /// **The rotation case, through the adapter.** `token.rs`'s
+    /// `rotating_only_the_secret_evicts_the_cached_bearer` proves the cache key
+    /// changes; this proves the *caller* mints a fresh bearer rather than
+    /// sending the retired one. Same `client_id`, a new `client_secret`, and a
+    /// closed `base_url`, so "did not reuse" is the `Transport` error from the
+    /// mint the call is forced to attempt.
+    #[tokio::test]
+    async fn rotating_only_the_client_secret_mints_a_new_token() {
+        let adapter = adapter();
+        let before = config();
+        let before_fingerprint = fingerprint(
+            credential(&before, "client_id").expect("client_id"),
+            credential(&before, "client_secret").expect("client_secret"),
+        );
+        *adapter.token.write().await = Some(cache_entry(
+            "token-from-the-old-secret".to_owned(),
+            std::time::Instant::now(),
+            Duration::from_secs(3_600),
+            before_fingerprint,
+        ));
+
+        // Only the secret half changes, the way a rotation is done, and the
+        // host is closed so the forced mint cannot succeed.
+        let mut rotated = config();
+        rotated.base_url = "http://127.0.0.1:9/orange-money-webpay/dev".to_owned();
+        rotated
+            .credentials
+            .insert("client_secret".to_owned(), "a-rotated-secret".to_owned());
+
+        let outcome = adapter.access_token(&rotated).await;
+        assert!(
+            matches!(outcome, Err(ProviderError::Transport { .. })),
+            "a rotated client_secret must mint its own bearer rather than reuse the one \
+             minted from the retired secret: {outcome:?}"
+        );
+    }
+
     #[test]
     fn a_rail_5xx_on_submit_is_transport_never_a_decline() {
         use vpay_core::{Category, Classify as _};
