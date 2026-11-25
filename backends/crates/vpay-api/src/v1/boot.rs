@@ -728,9 +728,10 @@ pub fn load_config(path: Option<&Path>, profile: &str) -> Result<Config, ConfigE
     tracing::info!(%profile, "deployment profile (selects a config file only)");
     let config = Config::load(path, profile)?;
     // Logged so an operator can see whose money this deployment collects.
-    // `validate_all` also reads `deployment.legal_entity` (it rejects a blank
-    // or mismatched value), but the id is not otherwise surfaced at boot and
-    // `legal_entity.name` reaches no caller at all.
+    // `validate_all` also reads `deployment.legal_entity` — it rejects a blank
+    // id or name and a merchant whose entity is missing or mismatched — but
+    // nothing beyond that blank check reads `legal_entity.name`, and the id is
+    // not surfaced elsewhere at boot.
     let legal_entity = config.deployment.legal_entity.as_ref();
     let legal_entity_id = legal_entity.map_or("<none>", |le| le.id.as_str());
     let legal_entity_name = legal_entity
