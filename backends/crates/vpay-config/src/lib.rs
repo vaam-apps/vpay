@@ -195,6 +195,12 @@ pub struct HostEntry {
     pub label: String,
 }
 
+/// Renders an optional configured id as its plain value, or `<none>` when it is
+/// absent — so a refusal never prints `Some("beta-sarl")`.
+fn or_none(value: &Option<String>) -> &str {
+    value.as_deref().unwrap_or("<none>")
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ConfigError {
     #[error("livemode requires https, got {0}")]
@@ -419,10 +425,20 @@ pub enum ConfigError {
     /// A merchant's `legal_entity` is missing (when two or more merchants are
     /// configured) or does not match `deployment.legal_entity.id`
     /// (RFC-0009 § 6, boot rule 2).
+    ///
+    /// The single-merchant case this variant also covers is deliberately
+    /// **stricter** than RFC-0009 § 6 rule 3: a lone merchant that names a
+    /// `legal_entity` while `deployment` declares none is refused, not
+    /// accepted, so a deployment can never collect money for an entity it has
+    /// not declared. The message renders `deployment_legal_entity` as `<none>`
+    /// in that case rather than claiming a mismatch against a value that does
+    /// not exist.
     #[error(
-        "merchant {merchant_id} has legal_entity {merchant_legal_entity:?}, expected \
-         deployment.legal_entity {deployment_legal_entity:?}: this merchant is another company \
-         and its money cannot land in this deployment's accounts until phase B gives it its own"
+        "merchant {merchant_id} has legal_entity {}, expected deployment.legal_entity {}: a \
+         deployment collects money for one legal entity, and a merchant that is not it cannot \
+         share the deployment's rail accounts until phase B gives it its own",
+        or_none(merchant_legal_entity),
+        or_none(deployment_legal_entity)
     )]
     MerchantOfAnotherLegalEntity {
         /// The `merchant_id` whose `legal_entity` is missing or mismatched.

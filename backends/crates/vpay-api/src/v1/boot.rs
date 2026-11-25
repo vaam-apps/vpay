@@ -727,8 +727,19 @@ pub fn load_config(path: Option<&Path>, profile: &str) -> Result<Config, ConfigE
     // `profile` names a YAML config file, never a code path — ADR-0003.
     tracing::info!(%profile, "deployment profile (selects a config file only)");
     let config = Config::load(path, profile)?;
+    // Logged so an operator can see whose money this deployment collects.
+    // `validate_all` also reads `deployment.legal_entity` (it rejects a blank
+    // or mismatched value), but the id is not otherwise surfaced at boot and
+    // `legal_entity.name` reaches no caller at all.
+    let legal_entity = config.deployment.legal_entity.as_ref();
+    let legal_entity_id = legal_entity.map_or("<none>", |le| le.id.as_str());
+    let legal_entity_name = legal_entity
+        .and_then(|le| le.name.as_deref())
+        .unwrap_or("<none>");
     tracing::info!(
         deployment = %config.deployment.name,
+        legal_entity = %legal_entity_id,
+        legal_entity_name = %legal_entity_name,
         livemode = config.deployment.livemode,
         providers = config.providers.len(),
         merchant_clients = config.merchant_clients.len(),

@@ -8330,6 +8330,71 @@ providers:
         );
     }
 
+    /// RFC-0009 § 6 rule 1, and the mutant it kills: a deployment with two or
+    /// more merchants must declare `deployment.legal_entity` **even when every
+    /// merchant claims the same one**. There is no fallback to a merchant's own
+    /// `legal_entity`, so "take the first merchant's" cannot boot.
+    #[test]
+    fn two_merchants_claiming_one_company_without_deployment_legal_entity_are_rejected() {
+        assert_eq!(
+            load_fixture("legal-entity-two-merchants-one-company-without-deployment.yml").err(),
+            Some(ConfigError::MerchantsWithoutLegalEntity {
+                merchant_ids: vec!["events".to_owned(), "shop".to_owned()],
+            })
+        );
+    }
+
+    /// Rule 2 is an **exact** match — not case-insensitive, not a prefix. The
+    /// mutants that would accept `ACME-SARL` or `acme` for `acme-sarl` are
+    /// killed here.
+    #[test]
+    fn a_legal_entity_is_matched_exactly_not_case_insensitively_or_by_prefix() {
+        for claimed in ["ACME-SARL", "acme"] {
+            let mut config =
+                load_fixture("legal-entity-two-projects-one-company.yml").expect("fixture boots");
+            config
+                .merchant_clients
+                .get_mut(1)
+                .expect("second merchant")
+                .legal_entity = Some(claimed.to_owned());
+            let raw = RawSecrets::identity(&config);
+
+            assert_eq!(
+                config.validate_all(&raw),
+                Err(ConfigError::MerchantOfAnotherLegalEntity {
+                    merchant_id: "events".to_owned(),
+                    merchant_legal_entity: Some(claimed.to_owned()),
+                    deployment_legal_entity: Some("acme-sarl".to_owned()),
+                }),
+                "{claimed:?} must not be accepted for acme-sarl"
+            );
+        }
+    }
+
+    /// A single merchant that names a `legal_entity` while `deployment`
+    /// declares none is refused. That is **stricter** than RFC-0009 § 6 rule 3
+    /// (which permits one merchant and no `deployment.legal_entity`) and is
+    /// deliberate: a deployment may not collect money for an entity it has not
+    /// declared. The refusal renders the absent deployment entity as `<none>`
+    /// rather than claiming a mismatch against a value that does not exist.
+    #[test]
+    fn one_merchant_claiming_an_entity_without_a_deployment_entity_is_rejected() {
+        let mut config = valid_config();
+        let merchant = config.merchant_clients.first_mut().expect("one merchant");
+        merchant.legal_entity = Some("acme-sarl".to_owned());
+        let expected_merchant_id = merchant.merchant_id.clone();
+        let raw = RawSecrets::identity(&config);
+
+        assert_eq!(
+            config.validate_all(&raw),
+            Err(ConfigError::MerchantOfAnotherLegalEntity {
+                merchant_id: expected_merchant_id,
+                merchant_legal_entity: Some("acme-sarl".to_owned()),
+                deployment_legal_entity: None,
+            })
+        );
+    }
+
     #[test]
     fn merchant_of_another_legal_entity_is_rejected() {
         assert_eq!(
