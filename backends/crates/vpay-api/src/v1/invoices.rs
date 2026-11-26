@@ -53,7 +53,7 @@ use vpay_db::{
     UnitOfWork,
 };
 
-use crate::error::ApiError;
+use crate::error::{ApiError, NO_ENABLED_RAIL_FOR_INVOICE_CURRENCY};
 use crate::form::VpayQuery;
 use crate::model::{DeletedObject, DeletedTrue, InvoiceObject, InvoiceTag, ListObject};
 use crate::v1::paging::{self, CursorKind};
@@ -1052,7 +1052,23 @@ async fn pay_hosted_once(
     }
 
     let now = OffsetDateTime::now_utc();
-    let intent = PaymentIntents::insert(repositories, &intent_for(&current, scope, now)).await?;
+    // The intent names the deployment's rails, because the payer follows a
+    // link out of an e-mail and nothing on the merchant's side chose one.
+    // Refused here rather than minted empty: the browser session read renders
+    // one `RailSpec` per code in this list, so an empty one is an empty
+    // `rails` member and `frontends/apps/checkout` refuses the page with
+    // `no_supported_rail` before the payer sees a rail at all.
+    let payment_method_types = config.enabled_rails_for_currency(&current.currency_code);
+    if payment_method_types.is_empty() {
+        return Err(ApiError::CheckoutNotConfigured(
+            NO_ENABLED_RAIL_FOR_INVOICE_CURRENCY,
+        ));
+    }
+    let intent = PaymentIntents::insert(
+        repositories,
+        &intent_for(&current, scope, payment_method_types, now),
+    )
+    .await?;
     CheckoutSessions::create(
         repositories,
         &session_for(
@@ -1339,9 +1355,12 @@ fn checked_received_at(
 /// mode was live then, and an intent that disagreed with the document it pays
 /// would be a test payment against a real bill or the reverse.
 ///
-/// `payment_method_types` is empty, exactly as `POST /v1/payment_intents`
-/// with none produces: the rail is chosen at confirm time, and an invoice
-/// does not narrow that choice.
+/// `payment_method_types` is every enabled rail that settles the invoice's
+/// currency (`ResourceConfig::enabled_rails_for_currency`), because an
+/// invoice does not narrow the payer's choice and the payer's browser can
+/// only render the rails the intent names. An earlier version left it empty,
+/// which the checkout page renders as an empty rail list and refuses; the
+/// caller refuses before this when that list would be empty.
 ///
 /// `metadata` is empty and is deliberately **not** copied from the invoice.
 /// A merchant's keys are theirs, attached to the object they attached them
@@ -1350,6 +1369,7 @@ fn checked_received_at(
 fn intent_for(
     invoice: &InvoiceRow,
     scope: &MerchantScope,
+    payment_method_types: Vec<String>,
     now: OffsetDateTime,
 ) -> NewPaymentIntent {
     NewPaymentIntent {
@@ -1361,7 +1381,12 @@ fn intent_for(
         status: IntentStatus::INITIAL.as_wire_str().to_owned(),
         last_payment_error_code: None,
         last_payment_error_message: None,
-        payment_method_types: Value::Array(Vec::new()),
+        payment_method_types: Value::Array(
+            payment_method_types
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        ),
         metadata: Value::Object(Map::new()),
         // The invoice's own number, so an operator reading a
         // `payment_intents` row knows what it is for without a join.

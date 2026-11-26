@@ -236,6 +236,23 @@ pub const PUBLISHABLE_KEY_MISSING: &str = "This account has no publishable key r
 pub const CHECKOUT_SESSION_WITHOUT_CHECKOUT_APP: &str = "A checkout session drives this payment, but `checkout.public_base_url` is not configured, so \
      vpay cannot tell the rail where to send the payer back. Restore it, or expire the session.";
 
+/// [`ApiError::CheckoutNotConfigured`]'s message when the deployment serves
+/// a checkout page and this tenant has a publishable key, but **no enabled
+/// rail settles the invoice's currency** — so a payer following the
+/// `hosted_invoice_url` would have no way to pay.
+///
+/// The fourth sentence under the same `code`, and a fourth *kind*: the first
+/// three are about the checkout page's own configuration, this one is about
+/// the rails. It shares the code because from the merchant's side it is the
+/// same fact — "this vpay cannot do hosted checkout for this bill" — and the
+/// same fix shape, an operator editing YAML and deploying. It is refused
+/// rather than left to the payer's browser, which renders an empty
+/// `payment_method_types` as its `no_supported_rail` refusal
+/// (`frontends/apps/checkout/src/lib/machine.ts`): a `500` naming the
+/// currency is actionable, a payer told "this page cannot continue" is not.
+pub const NO_ENABLED_RAIL_FOR_INVOICE_CURRENCY: &str = "This vpay deployment has no enabled rail that settles this invoice's currency, so it \
+     cannot take the payment. Configure a `providers[]` entry for the currency and enable it.";
+
 /// The state a Checkout Session was found in when it refused a confirm on
 /// the PaymentIntent it drives — the payload of
 /// [`ApiError::CheckoutSessionNotOpen`].
@@ -607,7 +624,7 @@ pub enum ApiError {
     /// decision and is recorded in `docs/plans/step9-notes/lane-1.md` rather
     /// than taken here.
     ///
-    /// # Three gaps, one code
+    /// # Four gaps, one code
     ///
     /// A missing `checkout.public_base_url` and a tenant with no
     /// `publishable_keys` are the same *fact* from a merchant's side — "this
@@ -615,7 +632,7 @@ pub enum ApiError {
     /// operator editing YAML and deploying. So they share the `code` an SDK
     /// branches on and differ only in the sentence, which is what tells
     /// whoever the merchant contacts *which* key to add. The message is a
-    /// `&'static str` chosen from the three constants beside this type, never
+    /// `&'static str` chosen from the four constants beside this type, never
     /// caller text: it is rendered to the caller, and a `String` here would
     /// be one refactor away from echoing something they sent.
     ///
@@ -625,6 +642,13 @@ pub enum ApiError {
     /// its return page from. Same code, same fix, same deploy — and the same
     /// argument for refusing rather than falling back, which that constant
     /// makes in full.
+    ///
+    /// The fourth, [`NO_ENABLED_RAIL_FOR_INVOICE_CURRENCY`], is a fourth
+    /// *kind* under the same code: the checkout page is configured and this
+    /// tenant has a key, but no enabled rail settles the invoice's currency,
+    /// so `POST /v1/invoices/{id}/pay` refuses rather than minting an intent
+    /// the payer's browser renders as an empty rail list. See that constant
+    /// for why the code is still the right one.
     #[error("checkout is not configured on this deployment: {0}")]
     CheckoutNotConfigured(&'static str),
 

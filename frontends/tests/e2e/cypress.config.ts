@@ -10,6 +10,10 @@ import {
   stopFrameFixtureServer,
 } from "./cypress/tasks/frameFixtureServer.js";
 import { mintCheckoutPaymentIntent } from "./cypress/tasks/checkoutTasks.js";
+import {
+  mintHostedInvoice,
+  readInvoice,
+} from "./cypress/tasks/invoiceTasks.js";
 import { logA11yViolations } from "./cypress/tasks/a11yTasks.js";
 import {
   carriedForward,
@@ -142,6 +146,12 @@ export default defineConfig({
       // the page under test.
       on("task", {
         mintCheckoutPaymentIntent,
+        // `hosted-invoice.cy.ts`: a finalized invoice, its hosted payer link,
+        // and the merchant's read of it afterwards. Node-side for the same
+        // reason `mintCheckoutPaymentIntent` is — the shop's signing seed
+        // never reaches the browser.
+        mintHostedInvoice,
+        readInvoice,
         // `shop-hosted.cy.ts`'s `color-contrast` checks (issue #73) — prints
         // the measured ratio and the element a violation was found on, since
         // headless `cypress run` never surfaces `Cypress.log`'s
