@@ -1989,6 +1989,42 @@ mod tests {
         );
     }
 
+    /// **The rotation case, through the adapter.** The test above proves a
+    /// *different* merchant is not served another's token; the case an
+    /// operator actually performs is rolling **one** credential in place —
+    /// same `api_user`, same `subscription_key`, a new `api_key` — and the
+    /// cache must not keep serving the bearer minted from the retired key.
+    /// `base_url` is a closed port, so "did not reuse" is observable as the
+    /// `Transport` error from the mint the call is forced to attempt.
+    #[tokio::test]
+    async fn rotating_only_the_api_key_mints_a_new_token() {
+        let adapter = adapter();
+        let before = config();
+        let credentials = Credentials::from_config(&before, Product::Collections)
+            .expect("a complete configuration");
+        *adapter.collections_token.write().await = Some(token::cache_entry(
+            "token-from-the-old-api-key".to_owned(),
+            credentials.fingerprint(),
+            std::time::Instant::now(),
+            Some(3_600),
+        ));
+
+        // Only the secret half changes, the way a rotation is done.
+        let mut rotated = config();
+        rotated
+            .credentials
+            .insert("api_key".to_owned(), "a-rotated-api-key".to_owned());
+        let rotated_credentials = Credentials::from_config(&rotated, Product::Collections)
+            .expect("a complete configuration");
+
+        let outcome = adapter.bearer(&rotated, &rotated_credentials).await;
+        assert!(
+            matches!(outcome, Err(ProviderError::Transport { .. })),
+            "a rotated api_key must mint its own token rather than reuse the one minted from \
+             the retired key: {outcome:?}"
+        );
+    }
+
     /// The `#[source]` chain, not just the sentence.
     ///
     /// `ProviderError::Transport` carries the `reqwest::Error` structurally
