@@ -446,10 +446,20 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value, jwks_c: Value) -> C
             display_name: None,
             callbacks: None,
         }],
-        currencies: vec![CurrencyEntry {
-            code: "XAF".to_owned(),
-            exponent: 0,
-        }],
+        // Two currencies, one rail. XAF is the one every pay case uses; EUR
+        // is admitted but **no enabled rail settles it** (the one rail below
+        // is XAF), which is the only way to reach `pay`'s empty-rail refusal
+        // (`paying_an_invoice_in_a_currency_no_rail_settles_is_refused`).
+        currencies: vec![
+            CurrencyEntry {
+                code: "XAF".to_owned(),
+                exponent: 0,
+            },
+            CurrencyEntry {
+                code: "EUR".to_owned(),
+                exponent: 2,
+            },
+        ],
         merchant_clients: vec![
             merchant_client_with_publishable_keys(CLIENT_A, MERCHANT_A, jwks_a, &[PK_A]),
             merchant_client(CLIENT_B, MERCHANT_B, jwks_b),
@@ -2415,6 +2425,173 @@ async fn the_payers_checkout_reads_name_the_invoice_number_and_nothing_else_abou
         item(&seen, 1, "number"),
         "two invoices, two numbers"
     );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// A payer who follows a `hosted_invoice_url` is offered the deployment's
+/// rails, so the hosted page can actually take the payment (issue #91,
+/// item 5's bug, found while writing its Cypress case).
+///
+/// # The bug this pins
+///
+/// `POST /v1/invoices/{id}/pay` used to mint its intent with an **empty**
+/// `payment_method_types`. The browser session read renders one
+/// `RailSpec` per code in that list
+/// (`vpay_api::browser::checkout_sessions`' `build_rails`), so an empty
+/// list is an empty `rails` member, and `frontends/apps/checkout` refuses
+/// the page with `no_supported_rail` before the payer ever sees a rail —
+/// **the D6 invoice number could not be read off a payment page, because
+/// the payment page never rendered.** The intent now names every enabled
+/// rail that settles the invoice's currency.
+///
+/// # The decisive mutation
+///
+/// Put `payment_method_types: Value::Array(Vec::new())` back in
+/// `intent_for` (the code as it stood): the `rails` assertions below fail
+/// with `rails` `[]`, and the merchant's `payment_method_types` assertion
+/// fails too.
+#[tokio::test]
+async fn a_payer_following_a_hosted_invoice_url_is_offered_the_deployments_rails()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    let invoice = open_invoice(&harness, CLIENT_A).await?;
+
+    let (status, paying) = harness
+        .post(
+            CLIENT_A,
+            &format!("/v1/invoices/{invoice}/pay"),
+            &[("success_url", SUCCESS_URL), ("cancel_url", CANCEL_URL)],
+        )
+        .await?;
+    assert_eq!(status, 200, "{paying}");
+
+    // The merchant's own read of the intent names the rail, so what the
+    // payer's browser is shown and what the merchant is told cannot drift.
+    let intent = field(&paying, "payment_intent")
+        .as_str()
+        .expect("pay attaches an intent")
+        .to_owned();
+    let (status, pi) = harness
+        .get(CLIENT_A, &format!("/v1/payment_intents/{intent}"))
+        .await?;
+    assert_eq!(status, 200, "{pi}");
+    assert_eq!(
+        field(&pi, "payment_method_types"),
+        &serde_json::json!([RAIL]),
+        "the invoice's intent names the deployment's enabled rail"
+    );
+
+    // The payer's own read — no merchant credential, only what the URL
+    // carries — renders the rail spec the checkout page draws from. This is
+    // the assertion that fails on an empty `payment_method_types`.
+    let hosted = field(&paying, "hosted_invoice_url")
+        .as_str()
+        .expect("pay produces a hosted URL")
+        .to_owned();
+    let reads = payer_reads(&harness, &hosted).await?;
+    let (status, session) = item(&reads, 0, "the session read");
+    assert_eq!(*status, 200, "{session}");
+
+    let rails = field(session, "rails")
+        .as_array()
+        .expect("the session read always carries a `rails` array");
+    let [mtn] = rails.as_slice() else {
+        panic!("the page must be offered the one enabled rail, but sees {rails:?}");
+    };
+    assert_eq!(field(mtn, "code"), RAIL);
+    assert_eq!(field(mtn, "flow"), "push");
+    let fields = field(mtn, "fields")
+        .as_array()
+        .expect("a rail spec's `fields` is an array");
+    let msisdn = item(fields, 0, "the rail's one payer field");
+    assert_eq!(
+        (
+            field(msisdn, "name"),
+            field(msisdn, "type"),
+            field(msisdn, "region")
+        ),
+        (
+            &serde_json::json!("msisdn"),
+            &serde_json::json!("phone"),
+            &serde_json::json!("CM")
+        ),
+        "the page can only drive a push rail whose one field is a Cameroon MSISDN"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// `POST /v1/invoices/{id}/pay` refuses a currency **no enabled rail
+/// settles**, rather than minting an intent whose empty
+/// `payment_method_types` the checkout page would render as its
+/// `no_supported_rail` refusal (issue #91 item 5).
+///
+/// This is the guard the cases above cannot reach: the demo stack's two
+/// rails and this harness's one both settle XAF, so only an invoice in a
+/// currency the deployment **admits** but no rail settles produces an empty
+/// rail list. Without the guard the intent is minted anyway and the payer's
+/// page refuses a step later, which is the bug this closes seen from the
+/// other end.
+///
+/// **The decisive mutation:** delete the `if payment_method_types.is_empty()`
+/// guard in `pay_hosted_once` — the `500` below becomes a `200` carrying an
+/// intent with no rails.
+#[tokio::test]
+async fn paying_an_invoice_in_a_currency_no_rail_settles_is_refused() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let customer = harness.customer(CLIENT_A).await?;
+
+    let (status, draft) = harness
+        .post(
+            CLIENT_A,
+            "/v1/invoices",
+            &[("customer", &customer), ("currency", "eur")],
+        )
+        .await?;
+    assert_eq!(status, 201, "{draft}");
+    let id = field(&draft, "id").as_str().expect("an id").to_owned();
+
+    let (status, line) = harness
+        .post(
+            CLIENT_A,
+            "/v1/invoice_items",
+            &[
+                ("invoice", &id),
+                ("description", "Hosting"),
+                ("quantity", "1"),
+                ("unit_amount", "5000"),
+            ],
+        )
+        .await?;
+    assert_eq!(status, 201, "{line}");
+
+    let (status, finalized) = harness
+        .post(CLIENT_A, &format!("/v1/invoices/{id}/finalize"), &[])
+        .await?;
+    assert_eq!(status, 200, "{finalized}");
+
+    let (status, body) = harness
+        .post(
+            CLIENT_A,
+            &format!("/v1/invoices/{id}/pay"),
+            &[("success_url", SUCCESS_URL), ("cancel_url", CANCEL_URL)],
+        )
+        .await?;
+    assert_eq!(status, 500, "{body}");
+    assert_eq!(
+        at(&body, &["error", "code"]),
+        "checkout_not_configured",
+        "a currency no rail settles answers the deployment-misconfigured code: {body}"
+    );
+
+    // The refusal wrote nothing: the invoice is still `open` and carries no
+    // intent, so a merchant who fixes the deployment can pay it afterwards.
+    let (_, unchanged) = harness.get(CLIENT_A, &format!("/v1/invoices/{id}")).await?;
+    assert_eq!(field(&unchanged, "status").as_str(), Some("open"));
+    assert_eq!(field(&unchanged, "payment_intent").as_str(), None);
 
     harness.shutdown().await;
     Ok(())

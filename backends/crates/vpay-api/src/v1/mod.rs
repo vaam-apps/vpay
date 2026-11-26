@@ -1388,6 +1388,36 @@ impl ResourceConfig {
         self.rails.get(code).filter(|rail| rail.enabled)
     }
 
+    /// The codes of every **enabled** rail that settles `currency_code`, in
+    /// code order.
+    ///
+    /// The one caller is `POST /v1/invoices/{id}/pay`: an invoice mints its
+    /// payment intent without the merchant naming any rails, so vpay names
+    /// the deployment's own — the payer follows a link out of an e-mail and
+    /// has no merchant process deciding which rail to offer them.
+    ///
+    /// It filters on the rail's own `providers[].currency`, the same field
+    /// the confirm path reconciles against the intent's
+    /// (`vpay_api::v1::payment_intents`' `currencies_agree`): offering a rail
+    /// that settles another currency would render a button every tap of
+    /// which is a `400`. The result is empty when the deployment configured
+    /// no enabled rail in this currency, and the caller refuses rather than
+    /// minting an intent with no rail — an intent with an empty
+    /// `payment_method_types` is one the checkout page renders as its
+    /// `no_supported_rail` refusal, which is the bug this exists to close.
+    ///
+    /// Code order (a `BTreeMap`'s key order) rather than the YAML's provider
+    /// order: `rails` has already lost the operator's order by the time a
+    /// request reads it, and a deterministic order is what a test can pin.
+    #[must_use]
+    pub fn enabled_rails_for_currency(&self, currency_code: &str) -> Vec<String> {
+        self.rails
+            .values()
+            .filter(|rail| rail.enabled && rail.currency().code() == currency_code)
+            .map(|rail| rail.code.clone())
+            .collect()
+    }
+
     /// This merchant's webhook endpoints, or an empty slice.
     ///
     /// An empty slice is a *complete* answer and not a missing entry: a

@@ -252,6 +252,13 @@ disagree about the client list for the length of a rolling deploy.
 
 ## 6. What is unproven
 
+- **The credential change is tested; the deployment rotation is not.** That a
+  rolled rail secret evicts the cached token is now proven at the adapter level
+  for MTN and Orange — `rotating_only_the_api_key_mints_a_new_token` and
+  `rotating_only_the_client_secret_mints_a_new_token` (issue #152) — beside the
+  Notch Pay callback-secret overlap and the merchant webhook two-secret
+  overlap. What is still unproven is this runbook end to end: a Secret edit, a
+  restart, and a live call against the rail, because no cluster has run vpay.
 - **No real rail credential rotation has been observed.** The MTN Collections
   sandbox calls described above do not prove this procedure.
   `error_kind = 'misconfigured'` as
