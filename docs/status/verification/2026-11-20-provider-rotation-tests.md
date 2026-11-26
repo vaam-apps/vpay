@@ -54,6 +54,16 @@ their `tracking_issue` is re-pointed:
 
 No migration, no schema, no route: this is two tests and the record around them.
 
+## Broken on purpose
+
+Reviewed 2026-11-26. The shared cache check
+(`vpay-provider/src/token.rs`, `CachedToken::usable`) was edited to ignore the
+credential fingerprint (`now < expires_at` alone). Result: MTN
+`rotating_only_the_api_key_mints_a_new_token` **FAILED**; Orange
+`rotating_only_the_client_secret_mints_a_new_token` **FAILED** (as did its
+module-level sibling `rotating_only_the_secret_evicts_the_cached_bearer`).
+The edit was reverted; the tests pass again on the unmodified code.
+
 ## What is not done
 
 - **Automated rotation** of production rail credentials and signing keys is
