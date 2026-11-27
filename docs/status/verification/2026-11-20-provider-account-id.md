@@ -37,3 +37,25 @@ A2)._
 - `just check-schema` (CrateStack CLI not installed locally; CI runs it).
 - Phase B (`B0`–`B7`, multi-company accounts, sealed DB secrets, `/v1/accounts`).
 - Companion `vpay-skills` PR for A2 (`vpay-data-layer` / `vpay-payments`).
+
+## Review of 2026-11-27
+
+A full `cargo nextest run --workspace` on the merged head found two failures
+the evidence above did not run, both fixed as new commits:
+
+- `postgres_smoke::schema_migrates_cleanly_on_an_empty_database` still
+  expected 63 applied migrations; it now expects 64 and names 0064.
+- `repositories::migration_0062_backfills_the_payer_mask_and_leaves_the_rest_null`
+  wrote `provider_account_id` into the **pre-0062** schema, where the column
+  does not exist yet; that insert is back to its original shape.
+
+0064's claims (backfill to `default`, no column `DEFAULT` afterwards) had no
+test of their own. `migration_0064_backfills_existing_charges_to_default_and_leaves_no_column_default`
+applies migrations 1 to 63, writes a charge, applies 0064 alone, reads
+`default` back, and requires an `INSERT` that omits the column to fail with
+SQLSTATE 23502. Broken on purpose: with `DROP DEFAULT` replaced by
+`SET DEFAULT 'default'` that test fails; the migration was restored and
+`verify-migrations` agrees with the manifest.
+
+`resolve_account_config_refuses_unknown_account_without_fallback` was also
+broken on purpose (the account comparison disabled): it fails.
