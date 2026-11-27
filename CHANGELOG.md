@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.19.0](https://github.com/vaam-apps/vpay/compare/v0.18.0...v0.19.0) (2026-11-27)
+
+
+### Features
+
+* **charges:** record and resolve provider_account_id per charge ([#290](https://github.com/vaam-apps/vpay/issues/290)) ([#423](https://github.com/vaam-apps/vpay/issues/423)) ([9bdeca7](https://github.com/vaam-apps/vpay/commit/9bdeca77ebadf27dade733162e75a22794cea6c7))
+* **config:** enforce deployment and merchant legal_entity at boot ([#290](https://github.com/vaam-apps/vpay/issues/290)) ([#422](https://github.com/vaam-apps/vpay/issues/422)) ([f97cf02](https://github.com/vaam-apps/vpay/commit/f97cf02b604c0a7a524b26759e4f9411168f14ef))
+
+
+### Bug Fixes
+
+* **deps:** clear the effect and next advisories (GHSA-7589-6fvf-x4pw and three next advisories) ([#416](https://github.com/vaam-apps/vpay/issues/416)) ([6dfdf6d](https://github.com/vaam-apps/vpay/commit/6dfdf6d5e2446c9e893c1dd93ec8aa24a8353c70))
+* **invoices:** an invoice's hosted checkout offers the deployment's rails, and Cypress follows hosted_invoice_url to a paid charge ([#91](https://github.com/vaam-apps/vpay/issues/91)) ([e38b855](https://github.com/vaam-apps/vpay/commit/e38b85514140a45d246acfc9587f03bc7f1c858f))
+* **invoices:** name the rails an invoice's checkout offers, and follow hosted_invoice_url in Cypress ([#91](https://github.com/vaam-apps/vpay/issues/91)) ([#421](https://github.com/vaam-apps/vpay/issues/421)) ([e38b855](https://github.com/vaam-apps/vpay/commit/e38b85514140a45d246acfc9587f03bc7f1c858f))
+* **staff:** the break-glass guards are tested, the operator check refuses invisible text, and the docs state the residual risk ([#152](https://github.com/vaam-apps/vpay/issues/152)) ([#415](https://github.com/vaam-apps/vpay/issues/415)) ([81cf246](https://github.com/vaam-apps/vpay/commit/81cf246737c0edb8769b5237a2fe5193845a714c))
+
+
+### Tests
+
+* **rails:** provider-credential rotation tests for MTN and Orange; split the [#152](https://github.com/vaam-apps/vpay/issues/152) gaps ([#152](https://github.com/vaam-apps/vpay/issues/152)) ([#420](https://github.com/vaam-apps/vpay/issues/420)) ([f3a14e2](https://github.com/vaam-apps/vpay/commit/f3a14e2c9a89d2722b7471613fe1af8b1b8190c8))
+
 ## [0.18.0](https://github.com/vaam-apps/vpay/compare/v0.17.0...v0.18.0) (2026-11-20)
 
 
