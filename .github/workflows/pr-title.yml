@@ -37,6 +37,11 @@ on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
 
+# A newer push to the same pull request cancels this run (owner, 2026-11-27).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

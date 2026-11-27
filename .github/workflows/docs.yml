@@ -4,6 +4,11 @@ on:
   pull_request:
     paths: ["docs/**", "README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"]
 
+# A newer push to the same pull request cancels this run (owner, 2026-11-27).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 # Read-only, as in ci.yml: this job runs one `cargo xtask` and reports
 # through its exit code. It never comments, labels or pushes
 # (CodeQL actions/missing-workflow-permissions).
