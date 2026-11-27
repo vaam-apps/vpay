@@ -603,6 +603,15 @@ fn make_request_span(request: &Request<Body>) -> Span {
         // Filled by the `/v1` scope step once it knows how the caller proved
         // who it is: `keypair` or `machine_token` (ADR-0037). Tracing only.
         auth.method = tracing::field::Empty,
+        // Filled by `track_http_metrics` once the request has been routed and
+        // answered, with the *bounded* values its metric labels carry: the
+        // route pattern, one of ten methods, the status code. These three are
+        // what the OpenTelemetry exporter may send of a request span
+        // (`vpay_telemetry::filter::FIELDS`); `method`, `path` and
+        // `request_id` above are for the log and never leave the process.
+        http.route = tracing::field::Empty,
+        http.request.method = tracing::field::Empty,
+        http.response.status_code = tracing::field::Empty,
     )
 }
 
@@ -741,6 +750,16 @@ async fn track_http_metrics(request: Request<Body>, next: Next) -> Response {
     let response = next.run(request).await;
     let elapsed = started.elapsed();
     let status = response.status().as_u16().to_string();
+
+    // The request span is the one `make_request_span` made and this middleware runs inside it; a span that is not
+    // recorded (no subscriber, or filtered out) makes these three calls no-ops.
+    let span = Span::current();
+    span.record("http.route", route.as_str());
+    span.record("http.request.method", method);
+    span.record(
+        "http.response.status_code",
+        i64::from(response.status().as_u16()),
+    );
 
     metrics::counter!(
         HTTP_REQUESTS_TOTAL,

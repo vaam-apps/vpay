@@ -14806,3 +14806,124 @@ async fn migration_0064_backfills_existing_charges_to_default_and_leaves_no_colu
     assert_eq!(database.code().as_deref(), Some("23502"), "{database}");
     Ok(())
 }
+
+/// `WebhookDeliveries::backlog` is the size of the *owed* work and the age of
+/// its most overdue member: settled deliveries are not in it, a retry rung in
+/// the future is pending but not overdue, and an empty table reads as zero
+/// (the gauge sampler writes a zero for a table it read, never for one it
+/// could not).
+#[tokio::test]
+async fn the_webhook_backlog_counts_only_pending_deliveries_and_clamps_lateness_at_zero()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    let empty = repositories.backlog().await?;
+    assert_eq!(
+        (empty.pending, empty.oldest_overdue_seconds),
+        (0, 0.0),
+        "an empty table is a backlog of nothing, read successfully"
+    );
+
+    let event = insert_event(
+        repositories.as_ref(),
+        &fixture_event("evt_backlog", "merchant_a"),
+    )
+    .await?;
+    let mut ids = Vec::new();
+    for endpoint in ["ep_overdue", "ep_later", "ep_settled"] {
+        ids.push(
+            create_delivery(
+                repositories.as_ref(),
+                &event.id,
+                endpoint,
+                "https://example.test/hook",
+            )
+            .await?
+            .context("the delivery must be created")?,
+        );
+    }
+    let [overdue, later, settled]: [uuid::Uuid; 3] = ids
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("three fixture deliveries"))?;
+    // Two pending: one whose rung was an hour ago, one whose rung is an hour away; and one settled.
+    sqlx::query(
+        "UPDATE webhook_deliveries SET next_attempt_at = now() - interval '1 hour' WHERE id = $1",
+    )
+    .bind(overdue)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "UPDATE webhook_deliveries SET next_attempt_at = now() + interval '1 hour' WHERE id = $1",
+    )
+    .bind(later)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "UPDATE webhook_deliveries SET state = 'succeeded', next_attempt_at = now() - interval '5 hours' WHERE id = $1",
+    )
+    .bind(settled)
+    .execute(&pool)
+    .await?;
+
+    let backlog = repositories.backlog().await?;
+    assert_eq!(backlog.pending, 2, "the settled delivery is not owed");
+    assert!(
+        (3_590.0..3_700.0).contains(&backlog.oldest_overdue_seconds),
+        "about an hour overdue, and the five-hours-old settled row is not counted: {}",
+        backlog.oldest_overdue_seconds
+    );
+
+    // Only the future rung left: pending, and not late.
+    sqlx::query("UPDATE webhook_deliveries SET state = 'succeeded' WHERE id = $1")
+        .bind(overdue)
+        .execute(&pool)
+        .await?;
+    let waiting = repositories.backlog().await?;
+    assert_eq!(waiting.pending, 1);
+    assert_eq!(
+        waiting.oldest_overdue_seconds, 0.0,
+        "a retry rung in the future is not late, and the gauge never goes negative"
+    );
+    Ok(())
+}
+
+/// The pool is read from the pool's own counters: it needs no round trip,
+/// `in_use` is what is checked out, and the maximum is the configured one.
+#[tokio::test]
+async fn the_pool_reading_counts_checked_out_connections_and_needs_no_round_trip()
+-> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let stats = repositories.pool_stats();
+    assert!(stats.max >= 1, "{stats:?}");
+    assert!(stats.size >= 1, "migrating opened at least one: {stats:?}");
+    assert_eq!(stats.in_use(), stats.size - stats.idle);
+    assert!(stats.size <= stats.max, "{stats:?}");
+    Ok(())
+}
+
+/// What the sampler's writers put into the facade: the backlog and the pool,
+/// under the names of `vpay_core::metrics`, with `state` as the only label.
+#[tokio::test]
+async fn the_sampler_writes_the_backlog_and_the_pool_gauges() -> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let backlog = repositories.backlog().await?;
+    let stats = repositories.pool_stats();
+    // A local recorder is thread-local, so the (synchronous) writers run inside it and the reads outside.
+    metrics::with_local_recorder(&recorder, || {
+        vpay_db::gauges::record_pool(&stats);
+        vpay_db::gauges::record_webhook_backlog(&backlog);
+    });
+    let body = handle.render();
+    for expected in [
+        "vpay_webhook_deliveries_pending 0",
+        "vpay_webhook_oldest_pending_overdue_seconds 0",
+        "vpay_db_pool_connections{state=\"idle\"}",
+        "vpay_db_pool_connections{state=\"in_use\"}",
+        "vpay_db_pool_max_connections ",
+    ] {
+        assert!(body.contains(expected), "{expected} in:\n{body}");
+    }
+    Ok(())
+}

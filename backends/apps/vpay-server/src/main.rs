@@ -244,6 +244,12 @@ fn exit_code_for(error: &anyhow::Error) -> u8 {
         .or_else(|| find_in_chain::<V1EnvelopeError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<StaffLoginError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<DbError>(error.chain()).map(|e| e.category()))
+        .or_else(|| {
+            find_in_chain::<vpay_telemetry::SettingsError>(error.chain()).map(|e| e.category())
+        })
+        .or_else(|| {
+            find_in_chain::<vpay_telemetry::StartError>(error.chain()).map(|e| e.category())
+        })
         .unwrap_or(Category::Internal);
     // Every `Category::exit_code()` is in `1..=78` (pinned by a test in
     // `vpay_core::error`), so this conversion cannot actually fail; `1` is
@@ -309,7 +315,7 @@ async fn run() -> anyhow::Result<()> {
     let mut shutdown_signals =
         ShutdownSignals::install().context("installing SIGINT/SIGTERM handlers")?;
 
-    let metrics = install_process_defaults(&args)?;
+    let (metrics, telemetry) = install_process_defaults(&args)?;
 
     // The three modes. `None` is serving traffic and is the rest of this
     // function; the other two return without ever reaching `boot` below, and
@@ -323,7 +329,14 @@ async fn run() -> anyhow::Result<()> {
     // nothing at all — see `ServerArgs::command`.
     match args.command.clone() {
         Some(vpay_config::ServerCommand::Worker(worker_args)) => {
-            return worker::run(&args.common, &worker_args, shutdown_signals, metrics).await;
+            return worker::run(
+                &args.common,
+                &worker_args,
+                shutdown_signals,
+                metrics,
+                telemetry,
+            )
+            .await;
         }
         Some(vpay_config::ServerCommand::Staff { command }) => {
             return run_command(&args, command).await;
@@ -337,6 +350,8 @@ async fn run() -> anyhow::Result<()> {
     }
 
     let booted = boot(&args).await?;
+    // The serve mode's own pool gauges; the worker's gauge loop writes them in `worker` mode.
+    tokio::spawn(sample_pool(Arc::clone(&booted.repositories)));
 
     // Bound before the router is built, so a port that is taken is a startup
     // failure rather than a router nobody serves — and `--bind 127.0.0.1:0` is
@@ -531,7 +546,11 @@ async fn run() -> anyhow::Result<()> {
         // stopped — nothing to tell.
         let _ = observability_shutdown_tx.send(());
     };
-    match serve_with_bounded_drain(listener, deps, shutdown_grace, shutdown).await? {
+    let outcome = serve_with_bounded_drain(listener, deps, shutdown_grace, shutdown).await?;
+    // Flushed on every way out, the cut-off one included: the spans, logs and metrics of a drain that
+    // timed out are the ones somebody will want.
+    flush_telemetry(telemetry).await;
+    match outcome {
         DrainOutcome::Clean => {
             join_observability(observability, shutdown_grace).await;
             tracing::info!("graceful shutdown complete, exiting");
@@ -551,9 +570,65 @@ async fn run() -> anyhow::Result<()> {
     }
 }
 
-/// The three process-wide defaults, in the one order that is safe.
+/// How often the serve mode reads its connection pool into `vpay_db_pool_*`. The same minute the worker's gauge loop
+/// uses (`vpay_worker::run_loop::GAUGE_INTERVAL`), so both modes' series have one resolution.
+const POOL_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Writes this process's pool into the `vpay_db_pool_*` gauges now and then. No database round trip: the pool answers
+/// from its own counters, so it keeps reporting when the database is down, which is when it matters.
+async fn sample_pool(repositories: Arc<dyn vpay_db::Repositories>) {
+    let mut ticker = tokio::time::interval(POOL_SAMPLE_INTERVAL);
+    loop {
+        // The first tick is immediate: a pool is visible from the first scrape, not a minute in.
+        ticker.tick().await;
+        vpay_db::gauges::record_pool(&repositories.pool_stats());
+    }
+}
+
+/// How long the last flush of the OpenTelemetry exporter may take on the way out. It runs on a thread of its own,
+/// so a collector that never answers costs this and nothing more.
+pub(crate) const TELEMETRY_FLUSH: Duration = Duration::from_secs(5);
+
+/// Flushes and stops the OpenTelemetry exporter, if one was started.
+pub(crate) async fn flush_telemetry(telemetry: Option<vpay_telemetry::Guard>) {
+    if let Some(guard) = telemetry {
+        guard.shutdown(TELEMETRY_FLUSH).await;
+    }
+}
+
+/// The OpenTelemetry exporter of this invocation: `None` unless `OTEL_EXPORTER_OTLP_ENDPOINT` (or a signal's) is set.
 ///
-/// All three are global state that anything after them may depend on, so
+/// Only the two long-running modes export. A one-shot operator command (`staff`, `callbacks`) prints its
+/// whole result on stdout and must not open a connection to a collector, whatever the environment says.
+///
+/// # Errors
+///
+/// A setting that is set and cannot be used (a `grpc` protocol, a variable this exporter would ignore, a headers
+/// file that cannot be read) is a startup failure, exit `78`: a setting ignored in silence is worse than one
+/// refused.
+fn start_telemetry(args: &ServerArgs) -> anyhow::Result<Option<vpay_telemetry::Guard>> {
+    let exports = matches!(
+        args.command,
+        None | Some(vpay_config::ServerCommand::Worker(_))
+    );
+    if !exports {
+        return Ok(None);
+    }
+    let settings = vpay_telemetry::Settings::from_lookup(
+        |name| std::env::var(name).ok(),
+        env!("CARGO_PKG_VERSION"),
+        |path| std::fs::read_to_string(path).ok(),
+    )
+    .context("reading the OpenTelemetry settings")?;
+    settings
+        .map(|settings| vpay_telemetry::start(&settings))
+        .transpose()
+        .context("starting the OpenTelemetry exporter")
+}
+
+/// The four process-wide defaults, in the one order that is safe.
+///
+/// All of them are global state that anything after them may depend on, so
 /// nothing can be allowed to run ahead of them: a `reqwest::Client` built
 /// before the crypto provider panics, and a metric recorded before the
 /// recorder is installed goes nowhere and is never recovered. Tracing is last
@@ -562,16 +637,22 @@ async fn run() -> anyhow::Result<()> {
 ///
 /// # Errors
 ///
-/// Only [`install_recorder`]'s, which cannot happen in this binary.
-fn install_process_defaults(args: &ServerArgs) -> anyhow::Result<PrometheusHandle> {
+/// [`start_telemetry`]'s, and [`install_recorder`]'s, which cannot happen in this binary.
+fn install_process_defaults(
+    args: &ServerArgs,
+) -> anyhow::Result<(PrometheusHandle, Option<vpay_telemetry::Guard>)> {
     install_crypto_provider();
-    let metrics = install_recorder().context("installing the Prometheus metrics recorder")?;
+    // After the crypto provider (its HTTP client is a `reqwest` on rustls) and before the recorder, which it wraps.
+    let telemetry = start_telemetry(args)?;
+    let metrics = install_recorder(telemetry.as_ref())
+        .context("installing the Prometheus metrics recorder")?;
     init_tracing(
         &args.common.log_filter,
         args.common.log_format,
         logs_to_stderr(args.command.as_ref()),
+        telemetry.as_ref(),
     );
-    Ok(metrics)
+    Ok((metrics, telemetry))
 }
 
 /// Whether this invocation's logs belong on **stderr** rather than stdout.
@@ -1596,10 +1677,16 @@ async fn join_observability(
 /// — nothing else calls `metrics::set_global_recorder`. It is reported rather
 /// than ignored because the alternative is a process whose `/metrics` renders
 /// empty forever while looking healthy.
-fn install_recorder() -> anyhow::Result<PrometheusHandle> {
+fn install_recorder(telemetry: Option<&vpay_telemetry::Guard>) -> anyhow::Result<PrometheusHandle> {
     let recorder = PrometheusBuilder::new().build_recorder();
     let handle = recorder.handle();
-    if metrics::set_global_recorder(recorder).is_err() {
+    // With telemetry on, the Prometheus exporter is one half of a fan-out: `/metrics` is exactly what it was, and
+    // the vocabulary of `vpay_core::metrics` also goes to the OpenTelemetry meter.
+    let installed = match telemetry {
+        Some(guard) => metrics::set_global_recorder(guard.recorder(recorder)).is_ok(),
+        None => metrics::set_global_recorder(recorder).is_ok(),
+    };
+    if !installed {
         anyhow::bail!(
             "a metrics recorder was already installed in this process; vpay-server installs \
              exactly one, so this is a bug rather than a deployment problem"
@@ -1655,32 +1742,37 @@ fn install_crypto_provider() {
 ///
 /// The two formats produce differently-typed subscriber builders, so this is
 /// a match over independent `.init()` calls rather than one shared pipeline.
-fn init_tracing(log_filter: &str, log_format: LogFormat, to_stderr: bool) {
-    match (log_format, to_stderr) {
-        (LogFormat::Json, false) => {
-            tracing_subscriber::fmt()
-                .json()
-                .with_env_filter(env_filter(log_filter))
-                .init();
-        }
-        (LogFormat::Json, true) => {
-            tracing_subscriber::fmt()
-                .json()
-                .with_writer(std::io::stderr)
-                .with_env_filter(env_filter(log_filter))
-                .init();
-        }
-        (LogFormat::Text, false) => {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter(log_filter))
-                .init();
-        }
-        (LogFormat::Text, true) => {
-            tracing_subscriber::fmt()
-                .with_writer(std::io::stderr)
-                .with_env_filter(env_filter(log_filter))
-                .init();
-        }
+fn init_tracing(
+    log_filter: &str,
+    log_format: LogFormat,
+    to_stderr: bool,
+    telemetry: Option<&vpay_telemetry::Guard>,
+) {
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+
+    // The formatter, with the operator's filter on *it alone*: the OpenTelemetry layers filter themselves, so a
+    // `--log-filter warn` silences the console and not the spans.
+    let console: Box<dyn tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync> =
+        match (log_format, to_stderr) {
+            (LogFormat::Json, false) => Box::new(tracing_subscriber::fmt::layer().json()),
+            (LogFormat::Json, true) => Box::new(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_writer(std::io::stderr),
+            ),
+            (LogFormat::Text, false) => Box::new(tracing_subscriber::fmt::layer()),
+            (LogFormat::Text, true) => {
+                Box::new(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+            }
+        };
+    let registry = tracing_subscriber::registry().with(console.with_filter(env_filter(log_filter)));
+    // Added only when there is one: an absent layer written as `None` has no filter, and would make every callsite of
+    // every crate interesting to the registry, which the operator's filter on the console no longer prevents.
+    match telemetry.and_then(vpay_telemetry::Guard::layer) {
+        Some(layer) => registry.with(layer).init(),
+        None => registry.init(),
     }
 }
 

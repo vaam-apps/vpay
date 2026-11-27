@@ -436,6 +436,29 @@ external_integrations:
       - "ID token signature, iss, aud, azp, exp, iat, nonce, group and second-factor checks"
     adr: "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
 
+  - id: otlp_collector
+    name: "OpenTelemetry Collector (operator's own)"
+    party: "The operator of the deployment"
+    direction: "outbound"
+    protocol: "OTLP over HTTP with JSON bodies; https, or http to this machine only when a credential header is set; redirects refused"
+    security_controls:
+      - "Off unless OTEL_EXPORTER_OTLP_ENDPOINT is set: nothing is built and no connection is opened without it"
+      - "Only the long-running modes (serve, worker) export; a one-shot staff or callbacks command never does"
+      - "An attribute leaves only if its field name is in vpay_telemetry::filter::FIELDS, and a metric only if its name and label keys are in vpay_core::metrics::ALL and LABELS"
+      - "Credential headers come from the file VPAY_OTEL_HEADERS_FILE names, never an environment variable, and no error or Debug output shows one"
+      - "A request that cannot be exported is dropped and counted; recording never blocks a request"
+    data_elements:
+      [
+        "route_pattern",
+        "http_method",
+        "http_status",
+        "rail_code",
+        "state_label",
+        "error_code",
+      ]
+    privacy_inventory_ref: "docs/reference/personal-data-inventory.md"
+    adr: "docs/adr/0039-opentelemetry-through-the-sdk-and-generated-dashboards.md"
+
   - id: merchant_webhook_endpoints
     name: "Merchant Webhook Endpoints"
     party: "Integrated merchants"

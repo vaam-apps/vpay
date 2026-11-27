@@ -76,6 +76,11 @@ rather than trusting this list to be exhaustive.
   `hosted_invoice_url` to a paid charge, the empty-`payment_method_types` bug
   it found, the API-level regression case, the mutation that turns each red,
   and what could not be run here.
+- [verification/2026-11-27-opentelemetry-export.md](verification/2026-11-27-opentelemetry-export.md) —
+  ANR-1168, ADR-0039: `vpay-telemetry` (metrics, spans and logs over OTLP/HTTP JSON
+  through the OpenTelemetry SDK, off unless an endpoint is set), six new series, three
+  generated Grafana dashboards. Test counts, `cargo deny`, the dependency graph and
+  what was **not** run: no real collector, Grafana or OpenObserve.
 - [verification/2026-11-20-provider-rotation-tests.md](verification/2026-11-20-provider-rotation-tests.md) —
   issue #152 item 152-4: adapter-level rotation tests for MTN and Orange (a
   rolled secret evicts the cached token), and the gap split — `GAP-152-DUAL-CONTROL`

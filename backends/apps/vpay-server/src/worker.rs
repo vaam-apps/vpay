@@ -97,6 +97,7 @@ pub(crate) async fn run(
     args: &WorkerArgs,
     mut shutdown_signals: ShutdownSignals,
     metrics: PrometheusHandle,
+    telemetry: Option<vpay_telemetry::Guard>,
 ) -> anyhow::Result<()> {
     let booted = boot(common, args).await?;
 
@@ -131,6 +132,8 @@ pub(crate) async fn run(
     )
     .await;
 
+    // Flushed on every way out, the cut-off one included.
+    crate::flush_telemetry(telemetry).await;
     match report.drain {
         Drain::Clean => {
             crate::join_observability(observability, grace).await;

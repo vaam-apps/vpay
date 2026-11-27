@@ -478,6 +478,32 @@ pub trait WebhookDeliveries: Send + Sync {
     ///
     /// Returns [`DbError::Query`] if the read fails.
     async fn for_event(&self, event_id: &str) -> Result<Vec<DeliveryRow>, DbError>;
+
+    /// The size of the delivery backlog: how many deliveries are owed an
+    /// attempt (`state = 'pending'`), and how long the most overdue one has
+    /// been past its `next_attempt_at`.
+    ///
+    /// One statement over the partial index `webhook_deliveries_live_idx`, so
+    /// its cost is the *outstanding* work and never the delivery log. A
+    /// delivery that has never been attempted has no `next_attempt_at`, and
+    /// counts from its `created_at`. The overdue figure is clamped at zero:
+    /// a retry rung still in the future is not late. Both subtractions are
+    /// the database's (ADR-0026).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the read fails.
+    async fn backlog(&self) -> Result<WebhookBacklog, DbError>;
+}
+
+/// What [`WebhookDeliveries::backlog`] read.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WebhookBacklog {
+    /// Deliveries in state `pending`.
+    pub pending: i64,
+    /// Seconds the most overdue of them is past its next attempt; `0.0` when
+    /// none is due.
+    pub oldest_overdue_seconds: f64,
 }
 
 #[async_trait::async_trait]
@@ -585,6 +611,22 @@ impl WebhookDeliveries for crate::repository::PgRepositories {
             .fetch_all(&self.pool)
             .await
             .map_err(DbError::Query)
+    }
+
+    async fn backlog(&self) -> Result<WebhookBacklog, DbError> {
+        let (pending, overdue): (i64, f64) = sqlx::query_as(
+            "SELECT count(*)::BIGINT, \
+                    COALESCE(GREATEST(EXTRACT(EPOCH FROM \
+                        (now() - min(COALESCE(next_attempt_at, created_at)))), 0), 0)::DOUBLE PRECISION \
+             FROM webhook_deliveries WHERE state = 'pending'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(DbError::Query)?;
+        Ok(WebhookBacklog {
+            pending,
+            oldest_overdue_seconds: overdue,
+        })
     }
 
     async fn for_event(&self, event_id: &str) -> Result<Vec<DeliveryRow>, DbError> {

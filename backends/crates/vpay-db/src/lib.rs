@@ -41,6 +41,8 @@ pub mod credentials;
 // twelve-month retention sweep all belong beside the code they constrain.
 pub mod customers;
 pub mod events;
+/// Samplers for the pool and webhook-backlog gauges (ANR-1168).
+pub mod gauges;
 // The merchant's bill to a payer, and the lines it is made of (S4b). One
 // module for both tables rather than two, because the pair is one aggregate:
 // a line has no meaning without its invoice, every write to `invoice_items`
@@ -162,7 +164,7 @@ pub use disabled_clients::DisabledClients;
 pub use envelope_nonces::EnvelopeNonces;
 pub use error::DbError;
 pub use events::{EventRow, Events, NewEvent};
-pub use health::Health;
+pub use health::{Health, PoolStats};
 pub use idempotency::{
     Idempotency, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome, ResponseSubject,
     StoredResponse,
@@ -211,4 +213,4 @@ pub use staff_sessions::{
 pub use staff_sso_attempts::{
     NewSsoAttempt, SSO_ATTEMPT_LIFETIME, SsoAttemptRow, StaffSsoAttempts,
 };
-pub use webhook_deliveries::{DeliveryRow, WebhookDeliveries};
+pub use webhook_deliveries::{DeliveryRow, WebhookBacklog, WebhookDeliveries};

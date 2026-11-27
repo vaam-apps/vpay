@@ -505,12 +505,17 @@ names the seam for each.
   until someone decides, with measured traffic, whether to exclude declines.
   See `docs/runbooks/provider-error-rate.md`.
 
-**Traces: deliberately absent.** Step-6 decision (6) chose `metrics` +
-`metrics-exporter-prometheus` over the OpenTelemetry SDK and deleted the
-unused `opentelemetry` pin rather than keeping it "for later". A slow request
-can be seen in `vpay_http_request_duration_seconds` and cannot be
-decomposed; JSON logs carrying a request id on every event are the
-correlation mechanism until an OTLP decision is made.
+**Traces: off unless a collector is configured (since 2026-11-27).** Step-6
+decision (6) chose `metrics` + `metrics-exporter-prometheus` over the
+OpenTelemetry SDK; [ADR-0039](../adr/0039-opentelemetry-through-the-sdk-and-generated-dashboards.md)
+reverses that in part. With `OTEL_EXPORTER_OTLP_ENDPOINT` set, `serve` and
+`worker` also export the same metric vocabulary, one server span per HTTP
+request (route pattern, method, status: nothing else) and plain-worded logs
+over OTLP/HTTP JSON; `/metrics` is unchanged, and with no endpoint nothing is
+built. There is no span for a worker job or a rail call yet, so a slow
+request is still seen in `vpay_http_request_duration_seconds` and not
+decomposed below the request. [`vpay-telemetry`'s README](../../backends/crates/vpay-telemetry/README.md)
+has the variables and what leaves; [`deploy/dashboards`](../../deploy/dashboards/README.md) the dashboards.
 
 ## 7. What guards the deployment
 
