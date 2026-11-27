@@ -59,3 +59,13 @@ SQLSTATE 23502. Broken on purpose: with `DROP DEFAULT` replaced by
 
 `resolve_account_config_refuses_unknown_account_without_fallback` was also
 broken on purpose (the account comparison disabled): it fails.
+
+`just verify` also failed its `check-schema` gate on the merged head, which
+the PR's own evidence listed as not run: adding `provider_account_id` to the
+`Charge` model changes the generated dashboard client
+(`frontends/packages/dash-client`: the model's field, the sort and filter
+types and the schema hash). `just gen-dash-client` was run and its output is
+committed; `check-schema` passes after it. The `cratestack` on this machine
+is 0.20.6 and the repository pins 0.20.4 (`check-schema` warns and runs
+against the newer grammar); the committed client for the unchanged models did
+not differ, so the generator agrees on them across the two versions.
