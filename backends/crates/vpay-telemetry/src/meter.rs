@@ -464,6 +464,7 @@ mod tests {
     struct Rig {
         provider: SdkMeterProvider,
         exporter: InMemoryMetricExporter,
+        bridge: Arc<Bridge>,
         fanout: Fanout<metrics_exporter_prometheus::PrometheusRecorder>,
     }
 
@@ -478,6 +479,7 @@ mod tests {
         Rig {
             provider,
             exporter,
+            bridge: Arc::clone(&bridge),
             fanout: Fanout::new(primary, Some(bridge)),
         }
     }
@@ -532,8 +534,14 @@ mod tests {
                 .increment(1);
         });
         let requests = rig.points(HTTP_REQUESTS_TOTAL);
-        // The SDK has a cardinality limit of its own per instrument (2000, plus an overflow series), lower than ours.
-        assert!(requests.len() <= MAX_SERIES, "the cap holds");
+        // The bridge held exactly MAX_SERIES handles: the cap itself, which the SDK's own cardinality limit (2000
+        // per instrument, plus an overflow series) is lower than and so cannot prove.
+        assert_eq!(
+            locked(&rig.bridge.handles).len(),
+            MAX_SERIES,
+            "the cap holds"
+        );
+        assert!(requests.len() <= MAX_SERIES);
         assert!(
             requests.iter().any(|(a, v)| a == "route=/r0" && *v >= 2.0),
             "a held series still counts at the cap"
