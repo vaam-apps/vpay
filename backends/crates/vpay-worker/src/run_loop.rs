@@ -1001,7 +1001,7 @@ async fn gauge_loop(
             }
         };
         // The pool (no I/O) and the webhook backlog. A failed read writes
-        // nothing: a stale series is honest, a zero is not.
+        // nothing (a zero would read as an empty backlog; the last value stays, and the staleness is not visible in the metric).
         if let Err(error) = vpay_db::gauges::sample(repositories.as_ref()).await {
             tracing::warn!(error = %error, "could not read the webhook delivery backlog");
         }

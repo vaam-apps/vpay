@@ -123,6 +123,13 @@ jobs:
               - 'rustfmt.toml'
               - 'clippy.toml'
               - '.cargo/**'
+              # The generated dashboards and the Python that writes them:
+              # `backends/crates/vpay-telemetry/tests/dashboards.rs` reads
+              # `deploy/dashboards/*.json` and the README, and the
+              # `dashboards-check` step regenerates them, so a change to either
+              # tree changes what this job runs.
+              - 'tools/dashboards/**'
+              - 'deploy/dashboards/**'
               # `cargo nextest run --workspace` and `just verify-ignored` both
               # read this, and nothing else in this workflow does. It is where
               # the `postgres-containers` test group's `max-threads = 1` lives
@@ -580,7 +587,7 @@ jobs:
       # pull request rather than only on whichever machine last ran it.
       - name: verify-docs (a report; never fails)
         run: cargo xtask verify-docs
-      # New 2026-11-27 (ANR-1168, ADR-0039). Not one of the eighteen gates (it
+      # New 2026-11-27 (ADR-0039). Not one of the eighteen gates (it
       # is not a `verify` dependency, so `count:verify-gates` is unmoved): the
       # Grafana JSON in deploy/dashboards/ is written by tools/dashboards/
       # (standard-library Python). Regenerate, then fail on any difference or

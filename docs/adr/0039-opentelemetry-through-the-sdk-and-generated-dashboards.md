@@ -5,10 +5,9 @@
   `metrics` + `metrics-exporter-prometheus` over the OpenTelemetry SDK and removed the unused `opentelemetry` pin. The
   Prometheus listener it built is **kept, unchanged**; this ADR adds an export beside it.
 - **Date:** 2026-11-27
-- **Deciders:** the owner, in two rulings relayed on the board (ANR-1165 and its memory `otel-conventions`), both
-  2026-11-27, quoted:
-  _"all backends should export OTel and we need to build OTel dashboards, important information to watch … We'll have it
-  in a grafana or openobserve (another openobserve instance, not the one for our users)"_, and
+- **Deciders:** the owner, in two rulings of 2026-11-27. The first, paraphrased: every backend exports OpenTelemetry,
+  OpenTelemetry dashboards are built for the important things to watch, and they live in a Grafana or an OpenObserve,
+  a separate OpenObserve instance for the service's own telemetry. The second, quoted:
   _"We'll use opentelemetry libs and json dashboards built with python scripts"_. The rest of this ADR, the allowlists,
   the closed vocabulary, the figures (a queue of 4096, 4096 series, a flush of 5 s) and the choice to keep the Prometheus
   listener, are the implementing change's, put to the owner for review: they are not quotations of a ruling.

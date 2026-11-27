@@ -97,10 +97,13 @@ it through the shipping exporter and asserts no number or name appears.
 
 **None leave the process unless an OTLP endpoint is configured** (since
 2026-11-27, ADR-0039; with none, nothing is built). With one, `serve` and
-`worker` export one server span per HTTP request, and **only these four
-fields leave** (`vpay_telemetry::filter::FIELDS`): `http.request.method`
-(one of ten, bounded), `http.route` (the route _pattern_, never the path),
-`http.response.status_code` and `vpay.auth.method`. The request span's
+`worker` export one server span per HTTP request, and **only the allowlisted
+fields leave**: the list has nine (`vpay_telemetry::filter::FIELDS`):
+`http.request.method` (one of ten, bounded), `http.route` (the route _pattern_,
+never the path), `http.response.status_code`, `vpay.auth.method`,
+`vpay.provider`, `vpay.operation`, `vpay.outcome`, `vpay.state` and
+`vpay.job.kind`. Only four of them (the first four) appear on any span today.
+The request span's
 `path` and `request_id`, span events, links and status messages never leave,
 and a text value is held to a plain alphabet and 64 bytes (`redacted`
 otherwise). An inbound `traceparent` is never read. Spans still exist as
@@ -111,7 +114,10 @@ Logs applies to the console output.
 
 The same endpoint carries `INFO`-and-above events of `vpay*` targets, **only
 with a message of letters alone** (anything with a digit, or over 128 bytes,
-is exported as `redacted`; most of vpay's lines carry ids, so most are), and
+is exported as `redacted`; most of vpay's lines carry ids, so most are), carrying
+at most the same nine allowlisted fields as attributes (the ones a log line records as a plain value
+today are `vpay.provider` and `vpay.operation`; a field recorded with `%` or `?` never reaches a
+log, because the log layer reads only plain values and the message), and
 the metric vocabulary of the section above restricted to the label keys in
 `vpay_core::metrics::LABELS`. The credential for the collector is a header
 read from the file `VPAY_OTEL_HEADERS_FILE` names, never an environment

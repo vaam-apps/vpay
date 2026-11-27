@@ -41,7 +41,7 @@
 //! ```
 //!
 //! The six lines after `vpay_provider_callbacks_total` landed with the
-//! OpenTelemetry export (ANR-1168, ADR-0039): the webhook delivery backlog,
+//! OpenTelemetry export (ADR-0039): the webhook delivery backlog,
 //! the database pool and the exporter's own two counters; see
 //! [`WEBHOOK_DELIVERIES_PENDING`] and [`TELEMETRY_EXPORTS_TOTAL`].
 //!

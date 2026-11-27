@@ -41,7 +41,7 @@ pub mod credentials;
 // twelve-month retention sweep all belong beside the code they constrain.
 pub mod customers;
 pub mod events;
-/// Samplers for the pool and webhook-backlog gauges (ANR-1168).
+/// Samplers for the pool and webhook-backlog gauges.
 pub mod gauges;
 // The merchant's bill to a payer, and the lines it is made of (S4b). One
 // module for both tables rather than two, because the pair is one aggregate:

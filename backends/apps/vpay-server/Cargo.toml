@@ -27,7 +27,7 @@ vpay-adapter-orange-money.workspace = true
 vpay-adapter-notchpay.workspace = true
 vpay-api.workspace = true
 vpay-worker.workspace = true
-# OpenTelemetry export (ANR-1168, ADR-0039): off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set. The one place it is
+# OpenTelemetry export (ADR-0039): off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set. The one place it is
 # started is `install_process_defaults` below.
 vpay-telemetry.workspace = true
 tokio.workspace = true

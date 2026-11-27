@@ -43,6 +43,10 @@ no connection is opened, and the series `vpay_telemetry_*` do not exist.
 
 A signal is on when it has a URL and is not `none`.
 
+**`service.instance.id`** is `OTEL_RESOURCE_ATTRIBUTES`' value when set, else the `HOSTNAME` environment variable (a
+pod's name), else a UUID generated at start, so two replicas never share an identity and a metrics store never merges
+their series. The UUID changes at every restart; set the attribute or `HOSTNAME` where series should survive one.
+
 **Refused at start (exit 78), with a message that names the variable and never its value:** every variable of the
 specification that the SDK would obey and this exporter does not set itself (`settings::UNSUPPORTED`: per-signal
 `*_HEADERS`, `*_TIMEOUT`, `*_COMPRESSION` and `*_CERTIFICATE`, `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`,

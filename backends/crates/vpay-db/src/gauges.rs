@@ -6,10 +6,13 @@
 //! `vpay_core::metrics`. Neither installs a recorder (`vpay_core::metrics`'s
 //! header), and with none installed both are no-ops.
 //!
-//! **A failed read writes nothing.** The gauge keeps its last value (a stale
-//! series, which a dashboard shows as a flat line and an alert on staleness
-//! catches), and the caller logs the error; a zero written for "could not
-//! read" would read as a healthy, empty backlog.
+//! **A failed read writes nothing.** The gauge keeps its last value, and the
+//! caller logs the error; a zero written for "could not read" would read as a
+//! healthy, empty backlog. **Staleness is not visible in the metric**: the
+//! exporter reports the gauge's last value with a fresh timestamp at every
+//! interval, so a dashboard shows a flat line and no alert can tell it from a
+//! backlog that really is flat. The only trace of a failed read is the log
+//! line; a failure counter is not built.
 
 use vpay_core::metrics::{
     DB_POOL_CONNECTIONS, DB_POOL_MAX_CONNECTIONS, WEBHOOK_DELIVERIES_PENDING,

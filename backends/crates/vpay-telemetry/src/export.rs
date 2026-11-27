@@ -127,19 +127,20 @@ pub(crate) struct Providers {
 }
 
 impl Providers {
+    /// Shuts the three providers down at once, each with the same `deadline`: the whole costs one deadline, not
+    /// three in a row.
     fn shutdown(&self, deadline: Duration) {
-        let _ = self
-            .tracer
-            .as_ref()
-            .map(|p| p.shutdown_with_timeout(deadline));
-        let _ = self
-            .logger
-            .as_ref()
-            .map(|p| p.shutdown_with_timeout(deadline));
-        let _ = self
-            .meter
-            .as_ref()
-            .map(|p| p.shutdown_with_timeout(deadline));
+        std::thread::scope(|scope| {
+            if let Some(p) = &self.tracer {
+                scope.spawn(move || p.shutdown_with_timeout(deadline));
+            }
+            if let Some(p) = &self.logger {
+                scope.spawn(move || p.shutdown_with_timeout(deadline));
+            }
+            if let Some(p) = &self.meter {
+                scope.spawn(move || p.shutdown_with_timeout(deadline));
+            }
+        });
     }
 }
 
@@ -260,20 +261,33 @@ fn build(settings: &Settings, tally: &Tally) -> Result<Providers, StartError> {
     })
 }
 
-/// The running exporter. Dropping it without [`Guard::shutdown`] blocks the dropping thread in the SDK's own shutdown
-/// (each provider flushes and waits, up to its default timeout), so a caller inside an async runtime should call
-/// [`Guard::shutdown`] on every way out: it flushes the queues and the metrics on a thread of its own, with a deadline.
+/// The running exporter. Dropping it without [`Guard::shutdown`] (an error return that skipped it) still flushes, but
+/// blocks the dropping thread for at most two seconds; a caller that can await should call [`Guard::shutdown`] on its
+/// normal way out: it flushes the queues and the metrics on a thread of its own, with the deadline it chooses.
 pub struct Guard {
-    providers: Providers,
+    /// `None` once shut down, so that dropping a shut-down guard does nothing.
+    providers: Option<Providers>,
     stats: Arc<Stats>,
 }
+
+/// How long dropping a guard that was not shut down waits for the final flush.
+const DROP_FLUSH: Duration = Duration::from_secs(2);
 
 impl std::fmt::Debug for Guard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Guard")
-            .field("traces", &self.providers.tracer.is_some())
-            .field("metrics", &self.providers.meter.is_some())
-            .field("logs", &self.providers.logger.is_some())
+            .field(
+                "traces",
+                &self.providers.as_ref().is_some_and(|p| p.tracer.is_some()),
+            )
+            .field(
+                "metrics",
+                &self.providers.as_ref().is_some_and(|p| p.meter.is_some()),
+            )
+            .field(
+                "logs",
+                &self.providers.as_ref().is_some_and(|p| p.logger.is_some()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -282,7 +296,7 @@ impl Guard {
     #[cfg(test)]
     pub(crate) fn for_test(providers: Providers) -> Self {
         Self {
-            providers,
+            providers: Some(providers),
             stats: Arc::new(Stats::default()),
         }
     }
@@ -301,9 +315,11 @@ impl Guard {
 
     /// Flushes everything queued and the metrics one last time, waiting at most `deadline`. The flush runs on a
     /// thread of its own, so a collector that never answers costs the deadline and nothing more.
-    pub async fn shutdown(self, deadline: Duration) {
+    pub async fn shutdown(mut self, deadline: Duration) {
+        let Some(providers) = self.providers.take() else {
+            return;
+        };
         let (done, wait) = tokio::sync::oneshot::channel();
-        let providers = self.providers;
         let spawned = std::thread::Builder::new()
             .name("vpay-telemetry-shutdown".to_owned())
             .spawn(move || {
@@ -312,6 +328,25 @@ impl Guard {
             });
         if spawned.is_ok() {
             let _ = tokio::time::timeout(deadline, wait).await;
+        }
+    }
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        // A way out that skipped `shutdown` (an error returned with `?`): flush anyway, bounded.
+        let Some(providers) = self.providers.take() else {
+            return;
+        };
+        let (done, wait) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("vpay-telemetry-drop".to_owned())
+            .spawn(move || {
+                providers.shutdown(DROP_FLUSH);
+                let _ = done.send(());
+            });
+        if spawned.is_ok() {
+            let _ = wait.recv_timeout(DROP_FLUSH);
         }
     }
 }
@@ -332,7 +367,7 @@ impl Guard {
     where
         S: tracing::Subscriber + for<'a> LookupSpan<'a> + Send + Sync,
     {
-        let providers = &self.providers;
+        let providers = self.providers.as_ref()?;
         if providers.tracer.is_none() && providers.logger.is_none() {
             return None;
         }
@@ -351,17 +386,21 @@ impl Guard {
                     .with_target(false)
                     .with_tracked_inactivity(false)
             })
-            .with_filter(filter_fn(move |meta: &Metadata<'_>| {
-                spans_on && spans_and_logs(meta)
-            }));
+            .with_filter(
+                filter_fn(move |meta: &Metadata<'_>| spans_on && spans_and_logs(meta))
+                    .with_max_level_hint(CAP),
+            );
         let logs_on = providers.logger.is_some();
         let logs = providers
             .logger
             .as_ref()
             .map(|provider| LogLayer::new(provider.logger(SCOPE)))
-            .with_filter(filter_fn(move |meta: &Metadata<'_>| {
-                logs_on && meta.is_event() && ours(meta.target()) && *meta.level() <= CAP
-            }));
+            .with_filter(
+                filter_fn(move |meta: &Metadata<'_>| {
+                    logs_on && meta.is_event() && ours(meta.target()) && *meta.level() <= CAP
+                })
+                .with_max_level_hint(CAP),
+            );
         Some(Box::new(spans.and_then(logs)))
     }
 
@@ -372,7 +411,10 @@ impl Guard {
     where
         R: metrics::Recorder + 'static,
     {
-        crate::meter::Fanout::new(primary, self.providers.bridge.clone())
+        crate::meter::Fanout::new(
+            primary,
+            self.providers.as_ref().and_then(|p| p.bridge.clone()),
+        )
     }
 }
 
@@ -394,5 +436,8 @@ pub fn start(settings: &Settings) -> Result<Guard, StartError> {
         .map_err(|_| StartError::Client)?
         .join()
         .map_err(|_| StartError::Client)??;
-    Ok(Guard { providers, stats })
+    Ok(Guard {
+        providers: Some(providers),
+        stats,
+    })
 }

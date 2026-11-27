@@ -40,8 +40,6 @@ reports its `not_implemented` error. Which rails have been called live, and when
 [`docs/status.md`](../../docs/status.md), and this folder never says a rail works. An empty panel means no such event
 happened, not that it is healthy.
 
-| File | Dashboard | For |
-|---|---|---|
 {files}
 
 ## Importing
@@ -74,23 +72,37 @@ Alert rules are the operator's, and none is shipped. Starting points from the th
 """
 
 
+def table(header, rows):
+    """A Markdown table whose columns are padded so every pipe lines up (markdownlint MD060, prettier's own layout)."""
+    widths = [max(len(cell) for cell in column) for column in zip(header, *rows)]
+
+    def line(cells):
+        return "| " + " | ".join(cell.ljust(width) for cell, width in zip(cells, widths)) + " |"
+
+    rule = "| " + " | ".join("-" * width for width in widths) + " |"
+    return "\n".join([line(header), rule, *[line(row) for row in rows]])
+
+
 def main():
     files = []
     sections = []
     for name, purpose in ORDER:
         document = json.loads((DIRECTORY / name).read_text(encoding="utf-8"))
-        files.append(f"| [`{name}`]({name}) | {document['title']} | {purpose} |")
+        files.append([f"[`{name}`]({name})", document["title"], purpose])
         rows = [
-            f"| `{p['title']}` | {p['options']['content'] if p['type'] == 'text' else p['description']} |"
+            [f"`{p['title']}`", p["options"]["content"] if p["type"] == "text" else p["description"]]
             for p in document["panels"]
             if p["type"] not in ("row",)
         ]
         sections.append(
-            f"## {document['title']}\n\n{document['description']}\n\n| Panel | What it watches, and what to do |\n|---|---|\n"
-            + "\n".join(rows)
+            f"## {document['title']}\n\n{document['description']}\n\n"
+            + table(["Panel", "What it watches, and what to do"], rows)
             + "\n"
         )
-    text = INTRO.format(files="\n".join(files), sections="\n".join(sections))
+    text = INTRO.format(
+        files=table(["File", "Dashboard", "For"], files),
+        sections="\n".join(sections),
+    )
     (DIRECTORY / "README.md").write_text(text, encoding="utf-8")
 
 

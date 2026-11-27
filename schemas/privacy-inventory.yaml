@@ -1425,7 +1425,7 @@ non_db_surfaces:
     unmet: metric label derivation is not centrally registered
   - id: traces
     surface: telemetry
-    description: "OTLP traces — off unless OTEL_EXPORTER_OTLP_ENDPOINT is set; then one server span per HTTP request with four allowlisted fields (vpay_telemetry::filter::FIELDS, ADR-0039)"
+    description: "OTLP traces — off unless OTEL_EXPORTER_OTLP_ENDPOINT is set; then one server span per HTTP request with nine allowlisted fields, of which only four appear on any span today; logs can carry vpay.provider and vpay.operation, and %-recorded fields never reach logs (vpay_telemetry::filter::FIELDS, ADR-0039)"
     enumerable: true
     unmet: ""
   - id: event_store

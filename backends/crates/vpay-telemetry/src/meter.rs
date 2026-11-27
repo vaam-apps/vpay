@@ -106,14 +106,19 @@ impl Bridge {
         // `counter()` finds this same instrument by name for the other signals' drops.
         let dropped = meter
             .u64_counter(TELEMETRY_DROPPED_TOTAL)
-            .with_description("Spans, logs and metric series the OpenTelemetry exporter dropped, by signal.")
+            .with_description(
+                "Spans, logs and metric series the OpenTelemetry exporter dropped, by signal.",
+            )
             .build();
         Self {
             meter,
             described: Mutex::new(Descriptions {
                 by_name: HashMap::new(),
             }),
-            counters: Mutex::new(HashMap::from([(TELEMETRY_DROPPED_TOTAL.to_owned(), dropped)])),
+            counters: Mutex::new(HashMap::from([(
+                TELEMETRY_DROPPED_TOTAL.to_owned(),
+                dropped,
+            )])),
             gauges: Mutex::default(),
             histograms: Mutex::default(),
             handles: Mutex::default(),
