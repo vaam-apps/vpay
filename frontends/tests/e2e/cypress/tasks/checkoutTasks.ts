@@ -46,7 +46,7 @@ export interface MintedCheckout {
  * the signing seed exactly the same way and fails with the same message if it
  * is missing.
  */
-function shopMerchantClient(): {
+export function shopMerchantClient(): {
   vpay: VpayClient;
   publishableKey: string;
   baseUrl: string;

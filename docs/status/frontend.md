@@ -406,6 +406,16 @@ reason: it is a nicety beside the amount, never a reason to refuse a payment.
 vitest.storybook.config.ts` (the command `just test-storybook` runs, with
   the Vite cache cleared first), headless Chromium 1243, **29 of 29 stories
   passed**, three of them new.
-- **Not done:** no Cypress case drives a browser from an invoice's
-  `hosted_invoice_url` to a paid charge (issue #91 item 5); see
-  [../flows/invoices.md](../flows/invoices.md) § Status.
+- **Written 2026-11-20 (issue #91 item 5), run by CI's `e2e (compose)`
+  job:** a Cypress case drives a browser from an invoice's
+  `hosted_invoice_url` to a paid charge —
+  `frontends/tests/e2e/cypress/e2e/hosted-invoice.cy.ts` — and reads the
+  invoice back as `paid`. Writing it found why no such case could have
+  passed before: `POST /v1/invoices/{id}/pay` minted its intent with an empty
+  `payment_method_types`, so the hosted page rendered its `no_supported_rail`
+  refusal instead of a payment page. `pay` now names every enabled rail that
+  settles the invoice's currency; see
+  [../flows/invoices.md](../flows/invoices.md) § Paying. **It was not run on
+  the machine that wrote it** — the compose stack could not be built there —
+  so the first execution is CI's; see
+  [verification/2026-11-20-cypress-hosted-invoice.md](verification/2026-11-20-cypress-hosted-invoice.md).

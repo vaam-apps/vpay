@@ -203,6 +203,26 @@ the rails that already exist ([hosted-checkout.md](hosted-checkout.md)).
 Building an invoice page would be a second payer surface to keep correct, and
 the one that exists is the one the browser tests already drive.
 
+**The intent names the deployment's rails, because a link in an e-mail has no
+merchant process to choose one (2026-11-20, issue #91 item 5).** `pay` mints
+its intent with every enabled rail that settles the invoice's currency
+(`ResourceConfig::enabled_rails_for_currency`), so the hosted page renders a
+rail for the payer to pick. Until then it minted the intent with an **empty**
+`payment_method_types`, and the page builds its rail list from exactly that
+member: an empty list was an empty `rails`, the page refused with
+`no_supported_rail`, and a payer following a `hosted_invoice_url` never saw a
+payment page at all — so the D6 invoice number below could not be read off one
+either. A deployment whose invoice currency no enabled rail settles now
+refuses `pay` with `checkout_not_configured` rather than minting an intent the
+page cannot render; the payer is not the one who could fix that. Driven by
+`frontends/tests/e2e/cypress/e2e/hosted-invoice.cy.ts` (a real
+`hosted_invoice_url` to a paid charge, and the invoice read back as `paid`;
+written 2026-11-20 and first run by CI's `e2e (compose)` job) and
+at the API level by
+`a_payer_following_a_hosted_invoice_url_is_offered_the_deployments_rails`
+(`invoices.rs`). Evidence:
+[../status/verification/2026-11-20-cypress-hosted-invoice.md](../status/verification/2026-11-20-cypress-hosted-invoice.md).
+
 **The payer is shown the invoice number since 2026-11-17 (issue #91, D6).**
 Both browser reads of the checkout session —
 `GET /v1/browser/checkout/sessions/{id}` and its `/return` — carry an
@@ -871,15 +891,22 @@ green while a settlement paid an invoice it was never bound to.
   [../status/verification/2026-11-17-invoice-number-on-checkout.md](../status/verification/2026-11-17-invoice-number-on-checkout.md).
   CI's `e2e (compose)` job is the first place they run beside the rest of the
   suite. The suite gets no parity rows of its own (ADR-0015 decision 4).
-- **No Cypress case renders an invoice's `hosted_invoice_url`.** The URL is
-  asserted to be a real checkout-session URL by the integration suite, and the
-  checkout page it points at is covered by `checkout.cy.ts` — but nothing has
-  driven a browser from an invoice to a paid charge. _(2026-11-17: the
-  blocker issue #91 named for this item, #78's hard-coded dashboard port, is
-  gone — #78 was closed by PR #94 on 2026-09-10. The case is still unwritten:
-  it needs the compose e2e stack, which the #91 slice that closed D6 could
-  not build or run, and a browser spec nothing has run would be a claim
-  nothing checked.)_
+- **A Cypress case renders an invoice's `hosted_invoice_url` and pays
+  (2026-11-20, issue #91 item 5).** `hosted-invoice.cy.ts` mints a finalized
+  invoice as `shop-merchant`, follows the `hosted_invoice_url` `pay` answered
+  with, pays it on the hosted page, and reads the invoice back as `paid`.
+  Writing it found that `pay` minted its intent with an empty
+  `payment_method_types`, so the page rendered `no_supported_rail` instead of
+  a payment page; see § Paying and
+  [../status/verification/2026-11-20-cypress-hosted-invoice.md](../status/verification/2026-11-20-cypress-hosted-invoice.md).
+  It was not run where it was written (the compose stack could not be built
+  there); CI's `e2e (compose)` job is its first execution.
+  _Until this, no case rendered one: the URL was asserted to be a real
+  checkout-session URL by the integration suite, and the checkout page it
+  points at is covered by `checkout.cy.ts`, but nothing had driven a browser
+  from an invoice to a paid charge. (2026-11-17: the blocker #91 named, #78's
+  hard-coded dashboard port, was already gone — #78 closed by PR #94 on
+  2026-09-10.)_
 - **No PDF, no e-mail, no hosted invoice page.** There is nothing to send and
   nothing to send it with. `hosted_invoice_url` is a checkout session, not a
   document.

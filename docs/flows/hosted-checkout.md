@@ -201,6 +201,23 @@ other three make.
 
 ## Status
 
+**Updated 2026-11-20 (issue #91, item 5): a payer who follows a
+`hosted_invoice_url` is now offered a rail to pay with.** The D6 entry below
+says this page names the invoice a payment settles; what it could not say is
+that a page ever rendered. `POST /v1/invoices/{id}/pay` minted its intent with
+an empty `payment_method_types`, this page builds its rail list from exactly
+that member (`build_rails`), and an empty list is the `no_supported_rail`
+refusal — so an invoice's payer link opened a page that offered no rail. `pay`
+now names every enabled rail that settles the invoice's currency, and
+`frontends/tests/e2e/cypress/e2e/hosted-invoice.cy.ts` follows a real
+`hosted_invoice_url` to a paid charge and reads the invoice back as `paid`
+(written 2026-11-20; it needs the compose stack, which could not be built where
+it was written, so CI's `e2e (compose)` job is its first execution). The API
+half is
+`a_payer_following_a_hosted_invoice_url_is_offered_the_deployments_rails`
+(`invoices.rs`). See [invoices.md](invoices.md) § Paying and
+[../status/verification/2026-11-20-cypress-hosted-invoice.md](../status/verification/2026-11-20-cypress-hosted-invoice.md).
+
 **Updated 2026-11-18 (later): a decline at confirm shows the decline, not
 "Something went wrong on our side".** When the rail refuses the confirm's own
 call, the server answers `409 charge_declined`, fails the intent's one charge
@@ -286,9 +303,15 @@ by `the_payers_checkout_reads_name_the_invoice_number_and_nothing_else_about_it`
 (`invoices.rs`) and
 `a_session_whose_intent_pays_no_invoice_renders_no_invoice_member`
 (`checkout_sessions.rs`), in jsdom by `checkout-view.test.tsx`, and through
-Storybook's Chromium axe run by three new stories. Not driven end to end in
-a browser: no Cypress case follows a `hosted_invoice_url`
-([invoices.md](invoices.md) § Status). Evidence:
+Storybook's Chromium axe run by three new stories. **A Cypress case now
+follows a `hosted_invoice_url` to a paid charge (issue #91 item 5):**
+`hosted-invoice.cy.ts` reads the invoice back as `paid`; before the same change
+the page refused `no_supported_rail`, because `pay` minted the intent with no
+rails (see the top of this Status). It was written 2026-11-20 and its first
+run is CI's `e2e (compose)` job, the compose stack not being buildable where it
+was written. Evidence:
+[../status/verification/2026-11-20-cypress-hosted-invoice.md](../status/verification/2026-11-20-cypress-hosted-invoice.md)
+and
 [../status/verification/2026-11-17-invoice-number-on-checkout.md](../status/verification/2026-11-17-invoice-number-on-checkout.md).
 
 **Updated 2026-09-23 (RFC-0004 § 5): `GET /v1/checkout/sessions` takes a

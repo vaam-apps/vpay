@@ -1014,5 +1014,8 @@ merchant_clients:
 - **Any merchant whose `legal_entity` is missing (when >=2 merchants) or differs from
   `deployment.legal_entity.id`**: refused at boot
   (`ConfigError::MerchantOfAnotherLegalEntity`), naming the merchant and both values.
-- **One `merchant_id`**: both `legal_entity` fields are optional so existing
-  single-merchant deployments boot unchanged (explicit mismatches are still refused).
+- **One `merchant_id`**: both `legal_entity` fields are optional, so an
+  existing single-merchant deployment boots unchanged. A merchant that
+  **sets** `legal_entity` while `deployment` declares none is refused
+  (`ConfigError::MerchantOfAnotherLegalEntity`, expected value `<none>`), as
+  is an explicit mismatch.
