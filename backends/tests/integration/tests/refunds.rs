@@ -2072,9 +2072,9 @@ impl RailHarness {
 
         sqlx::query(
             "INSERT INTO charges \
-                 (id, payment_intent_id, provider_code, provider_reference_id, state, amount, \
-                  currency_code, payer_ref, provider_txn_id) \
-             VALUES ($1, $2, $3, $4, 'succeeded', $5, 'XAF', $6, $7)",
+                 (id, payment_intent_id, provider_code, provider_account_id, \
+                  provider_reference_id, state, amount, currency_code, payer_ref, provider_txn_id) \
+             VALUES ($1, $2, $3, 'default', $4, 'succeeded', $5, 'XAF', $6, $7)",
         )
         .bind(vpay_core::ids::charge_id())
         .bind(intent_id)

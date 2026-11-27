@@ -726,47 +726,31 @@ transaction the caller owns), so there is no window and no compensating delete.
 - **R4: does `staff add` grow a `--kind`, and what provisions an SSO member?**
   Answerable only alongside the slice that implements a third kind.
 
-## Provider accounts are per deployment, not per merchant (measured 2026-10-16)
+## Provider accounts are per deployment, not per merchant (Phase A enforced 2026-11-20; Phase B unscheduled)
 
-**Pass-through holds only on a deployment that serves one merchant.** Measured
-on `master` at `44c5bf5`; nothing in code changed.
+**Pass-through holds for one-merchant deployments and multi-project deployments of
+one legal entity (RFC-0009 Phase A).** Multi-company deployments (Phase B) remain
+unscheduled and are refused at boot.
 
-- Provider credentials are configured once per rail, under
-  `providers[].credentials` in `config/application.yml`.
-- `vpay_config::oauth::MerchantClient` names no provider account.
-- `vpay_api::v1::ResourceConfig::from_config` builds one `RailConfig` per
-  rail code, and every merchant's call on that rail is handed the same
-  `ProviderConfig` — although the port documents that type as "per-merchant,
-  per-rail".
-- `charges` records `provider_code` (migration `0004`) and no account.
+- `deployment.legal_entity` and `merchant_clients[].legal_entity` are enforced at
+  boot (`Config::validate_all`, issue #290 Phase A1): two or more distinct
+  `merchant_id`s without `deployment.legal_entity` fail with
+  `ConfigError::MerchantsWithoutLegalEntity`, and any missing or mismatched
+  merchant claim fails with `ConfigError::MerchantOfAnotherLegalEntity`.
+- `charges.provider_account_id` (migration `0064`) is written explicitly as
+  `default` (`vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID`) in `insert_for_intent`
+  before any rail call, and `submit`, `query_status`, and `refund` resolve the
+  rail config from `(provider_code, provider_account_id)` via
+  `vpay_provider::resolve_account_config` (returning `ProviderError::Config` on
+  any unknown account id without fallback).
+- `confirm_rails::two_merchants_of_one_legal_entity_record_default_provider_account_id`
+  proves two merchants of one legal entity boot, take payments, and record
+  `provider_account_id = 'default'` beside their own `merchant_id`.
 
-So on a deployment that registers two `merchant_id`s, both merchants' MTN
-payments land in one MTN account and both merchants' Orange payments in one
-Orange `merchant_key`'s account. Whoever holds those accounts holds the other
-merchant's money, which is the aggregation
-[RFC-0001](../rfc/0001-settlement-and-payouts.md) says not to start. No test
-asserts which account a merchant's money reached, because no code path can
-tell two merchants' accounts apart. The per-merchant `merchant_payable` ledger
-account (migration `0045`) records whom vpay believes is owed, not where the
-rail put the money.
-
-[RFC-0009](../rfc/0009-provider-accounts-per-merchant.md) (Draft) proposes a
-provider account per merchant, recorded on every charge. Until it is built,
-run one deployment per merchant.
-
-_2026-10-22: the maintainer decided that the merchants served for now are
-projects of one company. RFC-0009's revision treats that case as the company
-being a merchant: one account per rail, holding the company's own money, is
-not aggregation. Its phase A is **partly built**: **A1** (2026-11-20, #422)
-adds `deployment.legal_entity` and a `legal_entity` on each merchant, and
-enforces at boot that a deployment serving two or more merchants declares one
-and that every merchant claims it
-(`ConfigError::MerchantsWithoutLegalEntity`, `ConfigError::MerchantOfAnotherLegalEntity`);
-**A2** (`charges.provider_account_id`) is still **not built**, so no rail call
-is scoped to an account and counsel has not been asked. So the rule stays one
-deployment per legal entity, not per merchant: several projects of one company
-may share one, and a merchant that is another company, a subsidiary included,
-still needs its own deployment._
+**What still requires Phase B (`B0`–`B7`, unscheduled):** serving a second legal
+entity (separate company or subsidiary) on the same deployment with per-account
+credentials, sealed database secrets, `/v1/accounts`, and per-account callbacks.
+Until Phase B is built, a second company cannot boot on a shared deployment.
 
 ## A refund names the payment it unwinds, and the `Origin` arm has an integration guard (2026-10-17, RFC-0010 § 7, step 1)
 

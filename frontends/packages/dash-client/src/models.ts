@@ -750,11 +750,12 @@ export const PaymentIntentSortFieldValues = [
   "updated_at",
 ] as const satisfies readonly PaymentIntentSortField[];
 
-export type ChargeSortField = 'id' | 'payment_intent_id' | 'provider_code' | 'provider_reference_id' | 'provider_txn_id' | 'redirect_url' | 'return_url' | 'state' | 'amount' | 'currency_code' | 'payer_ref' | 'payer_ref_masked' | 'failure_code' | 'failure_raw' | 'created_at' | 'updated_at';
+export type ChargeSortField = 'id' | 'payment_intent_id' | 'provider_code' | 'provider_account_id' | 'provider_reference_id' | 'provider_txn_id' | 'redirect_url' | 'return_url' | 'state' | 'amount' | 'currency_code' | 'payer_ref' | 'payer_ref_masked' | 'failure_code' | 'failure_raw' | 'created_at' | 'updated_at';
 export const ChargeSortFieldValues = [
   "id",
   "payment_intent_id",
   "provider_code",
+  "provider_account_id",
   "provider_reference_id",
   "provider_txn_id",
   "redirect_url",
@@ -1415,6 +1416,7 @@ export interface Charge {
   payment_intent?: PaymentIntent;
   provider_code?: string;
   provider?: Provider;
+  provider_account_id?: string;
   provider_reference_id?: string;
   provider_txn_id?: string | null;
   redirect_url?: string | null;
@@ -1436,6 +1438,7 @@ export interface Charge {
 export interface UpdateChargeInput {
   payment_intent_id?: string;
   provider_code?: string;
+  provider_account_id?: string;
   provider_reference_id?: string;
   provider_txn_id?: string | null;
   redirect_url?: string | null;
@@ -1455,6 +1458,7 @@ export interface ChargeWhere {
   id?: StringFilter;
   payment_intent_id?: StringFilter;
   provider_code?: StringFilter;
+  provider_account_id?: StringFilter;
   provider_reference_id?: UuidFilter;
   provider_txn_id?: StringFilter;
   redirect_url?: StringFilter;

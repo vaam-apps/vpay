@@ -773,6 +773,7 @@ pub(crate) async fn crashed_charge(
                     id: id.clone(),
                     payment_intent_id: payment_intent_id.to_owned(),
                     provider_code: rail.to_owned(),
+                    provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
                     provider_reference_id: reference,
                     provider_ref_extra: None,
                     redirect_url: None,

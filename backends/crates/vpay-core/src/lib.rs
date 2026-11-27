@@ -26,3 +26,9 @@ pub use settlement::{Settlement, StatusKind, contradiction, settle};
 pub use state::{
     ChargeState, IntentStatus, InvoiceStatus, ProviderFlow, RefundStatus, Transition, next_status,
 };
+
+/// The reserved `charges.provider_account_id` used in RFC-0009 Phase A: a
+/// deployment holds one account per rail at rail level, and every charge
+/// records `default` so Phase B never has to guess which account an old charge
+/// used.
+pub const DEFAULT_PROVIDER_ACCOUNT_ID: &str = "default";

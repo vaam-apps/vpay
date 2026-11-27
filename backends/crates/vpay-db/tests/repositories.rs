@@ -1183,6 +1183,7 @@ fn fixture_charge(id: &str, payment_intent_id: &str) -> vpay_db::NewCharge {
         id: id.to_owned(),
         payment_intent_id: payment_intent_id.to_owned(),
         provider_code: "mtn_momo".to_owned(),
+        provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
         provider_reference_id: uuid::Uuid::new_v4(),
         provider_ref_extra: None,
         redirect_url: None,
@@ -14710,5 +14711,98 @@ async fn migration_0062_backfills_the_payer_mask_and_leaves_the_rest_null() -> a
     .execute(&pool)
     .await
     .context("an erasure that clears the mask beside the marker is legal")?;
+    Ok(())
+}
+
+/// Migration 0064 (RFC-0009 Phase A2): `charges.provider_account_id` is
+/// backfilled to `default` for every row that predates it, and carries **no**
+/// column `DEFAULT` afterwards, so a writer that forgets the column is
+/// refused by the database instead of silently recording `default`.
+///
+/// Built the way the 0062 case is: migrations up to 0063 applied by hand, a
+/// charge written in the pre-0064 shape, then 0064 alone.
+///
+/// The decisive mutations: drop the `DEFAULT 'default'` from the `ADD COLUMN`
+/// and the migration itself fails on the existing row; keep the column
+/// `DEFAULT` (drop the `DROP DEFAULT`) and the final insert is accepted.
+#[tokio::test]
+async fn migration_0064_backfills_existing_charges_to_default_and_leaves_no_column_default()
+-> anyhow::Result<()> {
+    let container = vpay_testkit::containers::start_postgres_with_retry()
+        .await
+        .context("postgres:16-alpine container starts")?;
+    let host = container.get_host().await.context("container host")?;
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .context("container port")?;
+    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let pool = PgPool::connect(&url)
+        .await
+        .context("the raw pool connects")?;
+
+    let migrator = sqlx::migrate!("../../migrations");
+    let mut applied = 0_u32;
+    for migration in migrator.iter() {
+        if migration.version > 63 {
+            continue;
+        }
+        // `AssertSqlSafe`: `backends/migrations/*.sql`, embedded at compile
+        // time by `sqlx::migrate!`; it interpolates nothing.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(migration.sql.as_str().to_owned()))
+            .execute(&pool)
+            .await
+            .with_context(|| format!("applying migration {}", migration.version))?;
+        applied += 1;
+    }
+    assert_eq!(applied, 63, "the pre-0064 schema was actually built");
+
+    let repositories = vpay_db::connect(&url).await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    repositories
+        .insert(&fixture_intent("pi_account_old", "XAF"))
+        .await
+        .context("inserting the intent")?;
+    sqlx::query(
+        "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
+         state, amount, currency_code) \
+         VALUES ('ch_account_old', 'pi_account_old', 'mtn_momo', gen_random_uuid(), \
+         'submitted', 5000, 'XAF')",
+    )
+    .execute(&pool)
+    .await
+    .context("writing a charge in the pre-0064 shape")?;
+
+    let zero_zero_six_four = migrator
+        .iter()
+        .find(|migration| migration.version == 64)
+        .context("migration 0064 is in the embedded set")?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(
+        zero_zero_six_four.sql.as_str().to_owned(),
+    ))
+    .execute(&pool)
+    .await
+    .context("migration 0064 applies to a table that already has rows")?;
+
+    let account: String =
+        sqlx::query_scalar("SELECT provider_account_id FROM charges WHERE id = 'ch_account_old'")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(account, "default", "an existing charge is backfilled");
+
+    // From now on a writer must name the column.
+    let error = sqlx::query(
+        "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
+         state, amount, currency_code) \
+         VALUES ('ch_account_new', 'pi_account_old', 'mtn_momo', gen_random_uuid(), \
+         'submitted', 5000, 'XAF')",
+    )
+    .execute(&pool)
+    .await
+    .expect_err("an INSERT that omits provider_account_id is refused");
+    let database = error
+        .as_database_error()
+        .with_context(|| format!("not a database error: {error}"))?;
+    assert_eq!(database.code().as_deref(), Some("23502"), "{database}");
     Ok(())
 }
