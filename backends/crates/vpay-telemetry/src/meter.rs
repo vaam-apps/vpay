@@ -67,7 +67,7 @@ pub struct Bridge {
     counters: Mutex<HashMap<String, OtelCounter<u64>>>,
     gauges: Mutex<HashMap<String, OtelGauge<f64>>>,
     histograms: Mutex<HashMap<String, OtelHistogram<f64>>>,
-    handles: Mutex<Handles>,
+    handles: Mutex<SeriesHandles>,
 }
 
 /// The facade handles already made, one per series (a name with its labels). The facade asks the recorder for a
@@ -75,13 +75,13 @@ pub struct Bridge {
 /// keep their state in the handle: giving back the same handle for the same series is what makes them right across
 /// calls. Their number is the cap on series.
 #[derive(Default)]
-struct Handles {
+struct SeriesHandles {
     counters: HashMap<Key, Counter>,
     gauges: HashMap<Key, Gauge>,
     histograms: HashMap<Key, Histogram>,
 }
 
-impl Handles {
+impl SeriesHandles {
     fn len(&self) -> usize {
         self.counters.len() + self.gauges.len() + self.histograms.len()
     }

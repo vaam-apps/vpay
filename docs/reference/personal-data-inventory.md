@@ -211,25 +211,21 @@ _(**Added 2026-09-23, [ADR-0027](../adr/0027-erasure-reaches-through-checkout-se
 no statement was added, but three reach further.** The erasure's `charges`
 statement (`payer_ref`, `payer_ref_masked`, `failure_raw`), its `refunds`
 statement (`failure_raw`) and its `payment_intents` statement
-(`last_payment_error_*`) used to find a payment only through
-`payment_intents.customer_id`. They now find it through
+(`last_payment_error_\*`) used to find a payment only through
+`payment*intents.customer_id`. They now find it through
 `vpay_db::customers::PAYERS_INTENTS`. That constant also covers a
 customer-less intent that one of the customer's checkout sessions names,
-which is the shape a session created with `customer=` on such an intent left
+which is the shape a session created with `customer=`on such an intent left
 before vaam-apps/vpay#253. It never covers an intent that names another
-customer. No column and no classification moved, so
-`schemas/privacy-inventory.yaml` is unchanged. What moved is the evidence
-that the `payer_msisdn` and `rail_failure_text` controls run on those rows:
-`an_erasure_reaches_a_payment_whose_only_link_to_the_payer_is_a_checkout_session`,
+customer. No column and no classification moved, so`schemas/privacy-inventory.yaml`is unchanged. What moved is the evidence
+that the`payer_msisdn`and`rail_failure_text`controls run on those rows:`an_erasure_reaches_a_payment_whose_only_link_to_the_payer_is_a_checkout_session`,
 `an_erasure_through_a_session_never_reaches_an_intent_that_names_another_customer`,
-`a_session_create_and_an_erasure_of_its_customer_serialise_in_either_order`
-(a create can no longer attach an erased customer to a payment),
-`an_erasure_and_a_session_create_naming_another_customer_leave_that_customers_intent_alone`,
+`a_session_create_and_an_erasure_of_its_customer_serialise_in_either_order`(a create can no longer attach an erased customer to a payment),`an_erasure_and_a_session_create_naming_another_customer_leave_that_customers_intent_alone`,
 and the whole-database scan, which now seeds that shape
 (`backends/tests/integration/tests/customers.rs`; see
 [../status/verification/2026-09-23-erasure-through-checkout-sessions.md](../status/verification/2026-09-23-erasure-through-checkout-sessions.md)).
 The line references in the paragraph above are from 2026-09-18 and are now
-out of date. Search for the function names instead.)_
+out of date. Search for the function names instead.)*
 
 Of the five columns that used to be reached by **none** of those statements,
 the erasure now covers three. Two remain, each a documented maintainer decision
@@ -415,19 +411,19 @@ already-classified column; browser storage is one file; the observability
 listener is two routes), **not** evidence that anything re-checks it. The
 allowlist is held by `vpay-telemetry`'s own tests, not by this gate.
 
-| Surface           | Enumerable | Status                                                                                                                                                       |
-| ----------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `logs`            | no         | no static scanner over `tracing!` sites yet; the Debug-redaction rule, PR 4's `Display`-side redactions and one manual sweep (2026-11-17) are the only guard |
-| `metrics`         | no         | metric-label derivation is not centrally registered                                                                                                          |
+| Surface           | Enumerable | Status                                                                                                                                                                                                                                                                |
+| ----------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `logs`            | no         | no static scanner over `tracing!` sites yet; the Debug-redaction rule, PR 4's `Display`-side redactions and one manual sweep (2026-11-17) are the only guard                                                                                                          |
+| `metrics`         | no         | metric-label derivation is not centrally registered                                                                                                                                                                                                                   |
 | `traces`          | yes        | OTLP traces off unless an endpoint is set (ADR-0039); then one server span per request, nine allowlisted fields, four on any span today (`vpay_telemetry::filter::FIELDS`); logs can carry `vpay.provider` and `vpay.operation`; `%`-recorded fields never reach logs |
-| `event_store`     | yes        | `events.data` — redacted on customer erasure                                                                                                                 |
-| `webhook_payload` | no         | per-event projections (RFC-0002 D2) not yet implemented; payload == API object today                                                                         |
-| `browser_storage` | yes        | checkout page local memory on the payer's own device                                                                                                         |
-| `provider_rail`   | no         | no static scan of adapter request builders; guarded by `RefundTarget`'s redacting `Debug`                                                                    |
-| `merchant_api`    | no         | wire object projections are per-resource, not centrally registered                                                                                           |
-| `merchant_mcp`    | no         | `/mcp/v1`'s tool outputs (ADR-0033): `/v1`'s projections reshaped, so `merchant_api`'s gap; erasure cannot reach an agent host's copies                      |
-| `observability`   | yes        | `/livez` and `/metrics` on `--observability-bind`                                                                                                            |
-| `backup`          | no         | PITR/WAL and full backups — external store; retention of restore copies is a deployment obligation (RFC-0002 D13)                                            |
+| `event_store`     | yes        | `events.data` — redacted on customer erasure                                                                                                                                                                                                                          |
+| `webhook_payload` | no         | per-event projections (RFC-0002 D2) not yet implemented; payload == API object today                                                                                                                                                                                  |
+| `browser_storage` | yes        | checkout page local memory on the payer's own device                                                                                                                                                                                                                  |
+| `provider_rail`   | no         | no static scan of adapter request builders; guarded by `RefundTarget`'s redacting `Debug`                                                                                                                                                                             |
+| `merchant_api`    | no         | wire object projections are per-resource, not centrally registered                                                                                                                                                                                                    |
+| `merchant_mcp`    | no         | `/mcp/v1`'s tool outputs (ADR-0033): `/v1`'s projections reshaped, so `merchant_api`'s gap; erasure cannot reach an agent host's copies                                                                                                                               |
+| `observability`   | yes        | `/livez` and `/metrics` on `--observability-bind`                                                                                                                                                                                                                     |
+| `backup`          | no         | PITR/WAL and full backups — external store; retention of restore copies is a deployment obligation (RFC-0002 D13)                                                                                                                                                     |
 
 A surface with `enumerable: false` is an **unmet criterion**: the gate records it
 and keeps #144 open on it rather than manufacturing a self-check (RFC-0002 PR 2).
