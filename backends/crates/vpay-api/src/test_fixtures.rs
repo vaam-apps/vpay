@@ -147,6 +147,7 @@ pub(crate) fn merchant(client_id: &str, scopes: &[&str]) -> MerchantClient {
         // naming both parameters. [`config_with_invoice_defaults`] below is
         // the fixture for the other half.
         invoices: vpay_config::InvoiceDefaults::default(),
+        legal_entity: None,
     }
 }
 
@@ -191,6 +192,7 @@ pub(crate) fn config_with(public_base_url: &str, merchants: Vec<MerchantClient>)
             livemode: false,
             public_base_url: public_base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: Vec::new(),
         currencies: Vec::new(),

@@ -4814,6 +4814,16 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
         grep -q 'account_holders:read' "$overlay"
     }
 
+    # RFC-0009 Phase A1: two merchants require deployment.legal_entity and
+    # matching merchant_clients[].legal_entity.
+    legal_entity_present() {
+        local block
+        block=$(block_of deployment)
+        printf '%s\n' "$block" | grep -qE '^  legal_entity:$' \
+            && printf '%s\n' "$block" | grep -qE '^    id: vpay-demo-company$' \
+            && [ "$(grep -cE '^[[:space:]]+legal_entity: vpay-demo-company$' "$overlay")" -eq 2 ]
+    }
+
     if [ -e "$key" ] && [ -e "$shop_key" ] && [ -e "$overlay" ] && [ -e "$demo_seed" ] && [ -e "$shop_seed" ] && [ -e "$staff_env" ]; then
         # ...unless the overlay predates a required field. `merchant_id`
         # became required on `merchant_clients` in Step 2, and an overlay
@@ -4846,7 +4856,8 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
             && dashboard_client_present \
             && staff_auth_present \
             && cose_keys_present \
-            && demo_scopes_present; then
+            && demo_scopes_present \
+            && legal_entity_present; then
             echo "gen-demo-keys: $key, $shop_key, $demo_seed, $shop_seed, $staff_env and $overlay already exist, keeping them"
             exit 0
         fi
@@ -4920,6 +4931,8 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
             # stack does not publish — the payer's browser gets a connection
             # refused and no log anywhere names a port.
             echo "gen-demo-keys: $overlay was generated for a different demo_checkout_port than {{demo_checkout_port}} — regenerating the pair"
+        elif ! legal_entity_present; then
+            echo "gen-demo-keys: $overlay predates RFC-0009 Phase A1 \`legal_entity\` — regenerating the pair"
         else
             # Added 2026-09-04 (Step 9, lane 7 addendum A); keyed on the
             # currency rather than on the block's presence 2026-09-04 (r2
@@ -5039,6 +5052,9 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
       # VPAY_BASE_URL. See the \`demo_port\` variable in the justfile for what
       # goes wrong when the two disagree.
       public_base_url: http://localhost:{{demo_port}}
+      legal_entity:
+        id: vpay-demo-company
+        name: vPay Demo Company
 
     # The demo is the KEYPAIR showcase (ADR-0037): every \`/v1\` call is a signed
     # message, a bearer token is not a credential, and \`/v1/oauth/token\` is not
@@ -5236,6 +5252,7 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
         # demo creates carries this as its merchant_id and every query it
         # makes is filtered by it (vpay_config::MerchantClient::merchant_id).
         merchant_id: demo-merchant-tenant
+        legal_entity: vpay-demo-company
         # VP-3: the key \`/v1\` calls are signed with. The server finds this
         # merchant by the key that verified, so this line, not \`client_id\`, is
         # what makes a signed request \`demo-merchant\`'s. It is the merchant's
@@ -5296,6 +5313,7 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
       # be able to break the other by sharing a credential.
       - client_id: shop-merchant
         merchant_id: shop-merchant-tenant
+        legal_entity: vpay-demo-company
         cose_keys: [{ public_key: "$cose_shop", label: shop }]
         # \`payments:write\` covers both POST /v1/payment_intents and
         # POST /v1/checkout/sessions, which is the pair the shop makes per

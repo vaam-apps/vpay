@@ -19,7 +19,13 @@
   (credentials as rows), [ADR-0029](../adr/0029-card-and-bank-adapters-and-payment-method-routing.md)
   D1 rule 1 and D5.
 
-Nothing in this document is built. It proposes how a merchant's own account on
+**Partly built (2026-11-20, vaam-apps/vpay#422):** Phase **A1** —
+`deployment.legal_entity`, a `legal_entity` on each merchant, and the two boot
+refusals (`vpay_config::LegalEntity`,
+`ConfigError::MerchantsWithoutLegalEntity`,
+`ConfigError::MerchantOfAnotherLegalEntity`) — is implemented. Phase **A2**
+(`charges.provider_account_id`) and phases **B0–B7** are not. The rest of this
+document proposes how a merchant's own account on
 each provider is named in configuration and reached on every rail call. It
 starts from a gap measured in today's tree, not from a feature request.
 
@@ -337,10 +343,15 @@ merchant_clients:
 
 1. Two or more `merchant_id`s, and no `deployment.legal_entity`: refused. The
    configuration has not said whose money it collects.
-2. A merchant whose `legal_entity` is not the deployment's: refused, with a
-   message that this merchant is another company and that its money cannot
-   land in this deployment's accounts until phase B gives it its own.
-3. One `merchant_id`: both fields optional, and today's configuration boots
+2. A merchant whose `legal_entity` is missing (when two or more merchants are
+   configured) or is not the deployment's: refused, naming the merchant and
+   both values, and saying its money cannot land in this deployment's accounts
+   until phase B gives it its own.
+3. One `merchant_id`: both fields optional. A lone merchant that **sets**
+   `legal_entity` while `deployment` declares none is **refused**, which is
+   stricter than this section's original wording:
+   `ConfigError::MerchantOfAnotherLegalEntity` with `<none>` as the expected
+   value. Today's single-merchant configuration, which sets neither, boots
    unchanged (§ 4).
 
 The per-merchant `legal_entity` repeats the deployment's on purpose. It is the

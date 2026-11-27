@@ -1597,6 +1597,67 @@ impl Config {
             }
         }
 
+        // RFC-0009 § 6 (Phase A): a deployment serving two or more distinct
+        // `merchant_id`s must declare `deployment.legal_entity`, and every
+        // merchant must claim that same `legal_entity` so a second company
+        // cannot share rail-level accounts before Phase B. A single-merchant
+        // deployment keeps both fields optional, except an explicit mismatch
+        // is still refused.
+        if let Some(le) = &self.deployment.legal_entity {
+            if le.id.trim().is_empty() {
+                return Err(ConfigError::Validation(
+                    "deployment.legal_entity.id must not be blank".to_owned(),
+                ));
+            }
+            if le.name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+                return Err(ConfigError::Validation(
+                    "deployment.legal_entity.name must not be blank".to_owned(),
+                ));
+            }
+        }
+        for merchant in &self.merchant_clients {
+            if merchant
+                .legal_entity
+                .as_deref()
+                .is_some_and(|le| le.trim().is_empty())
+            {
+                return Err(ConfigError::Validation(format!(
+                    "merchant_clients[{}].legal_entity must not be blank",
+                    merchant.client_id
+                )));
+            }
+        }
+        let deployment_le = self
+            .deployment
+            .legal_entity
+            .as_ref()
+            .map(|le| le.id.as_str());
+        if self.merchant_clients.len() >= 2 {
+            let Some(expected_le) = deployment_le else {
+                return Err(ConfigError::MerchantsWithoutLegalEntity {
+                    merchant_ids: seen_merchant_ids.into_iter().map(str::to_owned).collect(),
+                });
+            };
+            for merchant in &self.merchant_clients {
+                if merchant.legal_entity.as_deref() != Some(expected_le) {
+                    return Err(ConfigError::MerchantOfAnotherLegalEntity {
+                        merchant_id: merchant.merchant_id.clone(),
+                        merchant_legal_entity: merchant.legal_entity.clone(),
+                        deployment_legal_entity: Some(expected_le.to_owned()),
+                    });
+                }
+            }
+        } else if let Some(merchant) = self.merchant_clients.first()
+            && let Some(merchant_le) = merchant.legal_entity.as_deref()
+            && deployment_le != Some(merchant_le)
+        {
+            return Err(ConfigError::MerchantOfAnotherLegalEntity {
+                merchant_id: merchant.merchant_id.clone(),
+                merchant_legal_entity: Some(merchant_le.to_owned()),
+                deployment_legal_entity: deployment_le.map(str::to_owned),
+            });
+        }
+
         // Uniqueness across *every* merchant, before any single key's own
         // shape is checked, for the reason the provider-code walk above runs
         // in that order: otherwise the first duplicate's own malformation
@@ -3694,6 +3755,7 @@ mod tests {
                 livemode: false,
                 public_base_url: "https://api.vpay.test".to_owned(),
                 surfaces: None,
+                legal_entity: None,
             },
             providers: Vec::new(),
             currencies: Vec::new(),
@@ -3712,6 +3774,7 @@ mod tests {
                 invoices: crate::oauth::InvoiceDefaults::default(),
                 publishable_keys: Vec::new(),
                 checkout_origins: Vec::new(),
+                legal_entity: None,
             }],
             checkout: CheckoutConfig::default(),
             dashboard: None,
@@ -5637,6 +5700,7 @@ merchant_clients:
                 livemode: true,
                 public_base_url: "http://api.vpay.example".to_owned(),
                 surfaces: None,
+                legal_entity: None,
             },
             providers: vec![ProviderHost {
                 code: "mtn_momo".to_owned(),
@@ -5737,6 +5801,7 @@ merchant_clients:
             livemode: false,
             public_base_url: "https://api.vpay.test/".to_owned(),
             surfaces: None,
+            legal_entity: None,
         };
         let mut host = ProviderHost {
             code: "orange_money".to_owned(),
@@ -5784,6 +5849,7 @@ merchant_clients:
             livemode: false,
             public_base_url: "https://api.vpay.test".to_owned(),
             surfaces: None,
+            legal_entity: None,
         };
         let host = ProviderHost {
             code: "mtn_momo".to_owned(),
@@ -8249,5 +8315,207 @@ providers:
             config.validate_all(&raw),
             Err(ConfigError::MissingPrivacyLookupAuditSalt)
         );
+    }
+
+    #[test]
+    fn two_merchants_without_deployment_legal_entity_are_rejected() {
+        assert_eq!(
+            load_fixture("legal-entity-missing-two-merchants.yml").err(),
+            Some(ConfigError::MerchantsWithoutLegalEntity {
+                merchant_ids: vec![
+                    "acme-cameroon-tenant".to_owned(),
+                    "beta-douala-tenant".to_owned(),
+                ],
+            })
+        );
+    }
+
+    /// RFC-0009 § 6 rule 1, and the mutant it kills: a deployment with two or
+    /// more merchants must declare `deployment.legal_entity` **even when every
+    /// merchant claims the same one**. There is no fallback to a merchant's own
+    /// `legal_entity`, so "take the first merchant's" cannot boot.
+    #[test]
+    fn two_merchants_claiming_one_company_without_deployment_legal_entity_are_rejected() {
+        assert_eq!(
+            load_fixture("legal-entity-two-merchants-one-company-without-deployment.yml").err(),
+            Some(ConfigError::MerchantsWithoutLegalEntity {
+                merchant_ids: vec!["events".to_owned(), "shop".to_owned()],
+            })
+        );
+    }
+
+    /// Rule 2 is an **exact** match — not case-insensitive, not a prefix. The
+    /// mutants that would accept `ACME-SARL` or `acme` for `acme-sarl` are
+    /// killed here.
+    #[test]
+    fn a_legal_entity_is_matched_exactly_not_case_insensitively_or_by_prefix() {
+        for claimed in ["ACME-SARL", "acme"] {
+            let mut config =
+                load_fixture("legal-entity-two-projects-one-company.yml").expect("fixture boots");
+            config
+                .merchant_clients
+                .get_mut(1)
+                .expect("second merchant")
+                .legal_entity = Some(claimed.to_owned());
+            let raw = RawSecrets::identity(&config);
+
+            assert_eq!(
+                config.validate_all(&raw),
+                Err(ConfigError::MerchantOfAnotherLegalEntity {
+                    merchant_id: "events".to_owned(),
+                    merchant_legal_entity: Some(claimed.to_owned()),
+                    deployment_legal_entity: Some("acme-sarl".to_owned()),
+                }),
+                "{claimed:?} must not be accepted for acme-sarl"
+            );
+        }
+    }
+
+    /// A single merchant that names a `legal_entity` while `deployment`
+    /// declares none is refused. That is **stricter** than RFC-0009 § 6 rule 3
+    /// (which permits one merchant and no `deployment.legal_entity`) and is
+    /// deliberate: a deployment may not collect money for an entity it has not
+    /// declared. The refusal renders the absent deployment entity as `<none>`
+    /// rather than claiming a mismatch against a value that does not exist.
+    #[test]
+    fn one_merchant_claiming_an_entity_without_a_deployment_entity_is_rejected() {
+        let mut config = valid_config();
+        let merchant = config.merchant_clients.first_mut().expect("one merchant");
+        merchant.legal_entity = Some("acme-sarl".to_owned());
+        let expected_merchant_id = merchant.merchant_id.clone();
+        let raw = RawSecrets::identity(&config);
+
+        assert_eq!(
+            config.validate_all(&raw),
+            Err(ConfigError::MerchantOfAnotherLegalEntity {
+                merchant_id: expected_merchant_id,
+                merchant_legal_entity: Some("acme-sarl".to_owned()),
+                deployment_legal_entity: None,
+            })
+        );
+    }
+
+    #[test]
+    fn merchant_of_another_legal_entity_is_rejected() {
+        assert_eq!(
+            load_fixture("legal-entity-merchant-mismatch.yml").err(),
+            Some(ConfigError::MerchantOfAnotherLegalEntity {
+                merchant_id: "beta-douala-tenant".to_owned(),
+                merchant_legal_entity: Some("beta-sarl".to_owned()),
+                deployment_legal_entity: Some("acme-sarl".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn two_projects_of_one_legal_entity_boot() {
+        let config = load_fixture("legal-entity-two-projects-one-company.yml")
+            .expect("two projects of one legal entity boot");
+        assert_eq!(
+            config
+                .deployment
+                .legal_entity
+                .as_ref()
+                .map(|le| le.id.as_str()),
+            Some("acme-sarl")
+        );
+        assert_eq!(config.merchant_clients.len(), 2);
+    }
+
+    #[test]
+    fn two_merchants_with_deployment_legal_entity_but_missing_merchant_claim_is_rejected() {
+        let mut config =
+            load_fixture("legal-entity-two-projects-one-company.yml").expect("fixture boots");
+        config
+            .merchant_clients
+            .get_mut(1)
+            .expect("second merchant")
+            .legal_entity = None;
+        let raw = RawSecrets::identity(&config);
+
+        assert_eq!(
+            config.validate_all(&raw),
+            Err(ConfigError::MerchantOfAnotherLegalEntity {
+                merchant_id: "events".to_owned(),
+                merchant_legal_entity: None,
+                deployment_legal_entity: Some("acme-sarl".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn one_merchant_with_mismatched_legal_entity_is_rejected() {
+        let mut config = valid_config();
+        config.deployment.legal_entity = Some(crate::LegalEntity {
+            id: "acme-sarl".to_owned(),
+            name: None,
+        });
+        let merchant = config.merchant_clients.first_mut().expect("one merchant");
+        merchant.legal_entity = Some("beta-sarl".to_owned());
+        let expected_merchant_id = merchant.merchant_id.clone();
+        let raw = RawSecrets::identity(&config);
+
+        assert_eq!(
+            config.validate_all(&raw),
+            Err(ConfigError::MerchantOfAnotherLegalEntity {
+                merchant_id: expected_merchant_id,
+                merchant_legal_entity: Some("beta-sarl".to_owned()),
+                deployment_legal_entity: Some("acme-sarl".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn one_merchant_without_legal_entity_boots_unchanged() {
+        let config = valid_config();
+        assert!(config.deployment.legal_entity.is_none());
+        assert_eq!(config.merchant_clients.len(), 1);
+        assert!(
+            config
+                .merchant_clients
+                .first()
+                .expect("one merchant")
+                .legal_entity
+                .is_none()
+        );
+        let raw = RawSecrets::identity(&config);
+        assert_eq!(config.validate_all(&raw), Ok(()));
+    }
+
+    #[test]
+    fn whitespace_only_legal_entity_values_are_refused() {
+        let mut config = valid_config();
+        config.deployment.legal_entity = Some(crate::LegalEntity {
+            id: "   ".to_owned(),
+            name: None,
+        });
+        let raw = RawSecrets::identity(&config);
+        assert!(matches!(
+            config.validate_all(&raw),
+            Err(ConfigError::Validation(_))
+        ));
+
+        let mut config = valid_config();
+        config.deployment.legal_entity = Some(crate::LegalEntity {
+            id: "acme-sarl".to_owned(),
+            name: Some("   ".to_owned()),
+        });
+        let raw = RawSecrets::identity(&config);
+        assert!(matches!(
+            config.validate_all(&raw),
+            Err(ConfigError::Validation(_))
+        ));
+
+        let mut config = valid_config();
+        config
+            .merchant_clients
+            .first_mut()
+            .expect("one merchant")
+            .legal_entity = Some("   ".to_owned());
+        let raw = RawSecrets::identity(&config);
+        assert!(matches!(
+            config.validate_all(&raw),
+            Err(ConfigError::Validation(_))
+        ));
     }
 }

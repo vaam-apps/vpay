@@ -3137,6 +3137,7 @@ mod tests {
                 livemode: false,
                 public_base_url: "https://api.vpay.test".to_owned(),
                 surfaces: Some(Vec::new()),
+                legal_entity: None,
             };
             let err = deployment
                 .enabled_surfaces()

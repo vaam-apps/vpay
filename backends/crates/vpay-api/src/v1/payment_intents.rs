@@ -3392,6 +3392,7 @@ mod tests {
                 livemode: false,
                 public_base_url: "https://api.vpay.test".to_owned(),
                 surfaces: None,
+                legal_entity: None,
             },
             providers: vec![
                 ProviderHost {

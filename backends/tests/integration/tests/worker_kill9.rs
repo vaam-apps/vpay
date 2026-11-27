@@ -800,6 +800,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![ProviderHost {
             code: RAIL.to_owned(),

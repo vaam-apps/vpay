@@ -220,6 +220,7 @@ mod tests {
                 livemode: false,
                 public_base_url: "https://pay.example".to_owned(),
                 surfaces: None,
+                legal_entity: None,
             },
             providers,
             currencies: Vec::new(),

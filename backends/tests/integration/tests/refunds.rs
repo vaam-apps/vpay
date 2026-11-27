@@ -154,6 +154,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![ProviderHost {
             code: RAIL.to_owned(),
@@ -2340,6 +2341,7 @@ fn rail_config(
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![
             ProviderHost {
@@ -2627,6 +2629,7 @@ fn origin_config(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![ProviderHost {
             code: ORIGIN_RAIL.to_owned(),

@@ -93,6 +93,7 @@ fn configured_merchant() -> MerchantClient {
         // Nor is a forwarding URL: where a payer lands after paying an
         // invoice is not a credential this store resolves.
         invoices: vpay_config::InvoiceDefaults::default(),
+        legal_entity: None,
     }
 }
 

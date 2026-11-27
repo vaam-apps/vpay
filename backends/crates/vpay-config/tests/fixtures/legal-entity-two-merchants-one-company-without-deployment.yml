@@ -1,0 +1,37 @@
+# Fixture for `two_merchants_claiming_one_company_without_deployment_legal_entity_are_rejected`
+# (backends/crates/vpay-config/src/config.rs, RFC-0009 § 6 boot rule 1).
+#
+# Unlike `legal-entity-missing-two-merchants.yml`, both merchants here DO
+# claim the same `legal_entity` (`acme-sarl`); only `deployment` omits it.
+# The refusal must still happen: a deployment serving two or more merchants
+# must declare whose money it collects, and there is no fallback to a
+# merchant's own `legal_entity` (that is the mutant this fixture kills).
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: shop-web
+    merchant_id: shop
+    legal_entity: acme-sarl
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+  - client_id: events-web
+    merchant_id: events
+    legal_entity: acme-sarl
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k2
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]

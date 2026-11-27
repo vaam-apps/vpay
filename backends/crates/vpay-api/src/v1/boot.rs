@@ -727,8 +727,20 @@ pub fn load_config(path: Option<&Path>, profile: &str) -> Result<Config, ConfigE
     // `profile` names a YAML config file, never a code path — ADR-0003.
     tracing::info!(%profile, "deployment profile (selects a config file only)");
     let config = Config::load(path, profile)?;
+    // Logged so an operator can see whose money this deployment collects.
+    // `validate_all` also reads `deployment.legal_entity` — it rejects a blank
+    // id or name and a merchant whose entity is missing or mismatched — but
+    // nothing beyond that blank check reads `legal_entity.name`, and the id is
+    // not surfaced elsewhere at boot.
+    let legal_entity = config.deployment.legal_entity.as_ref();
+    let legal_entity_id = legal_entity.map_or("<none>", |le| le.id.as_str());
+    let legal_entity_name = legal_entity
+        .and_then(|le| le.name.as_deref())
+        .unwrap_or("<none>");
     tracing::info!(
         deployment = %config.deployment.name,
+        legal_entity = %legal_entity_id,
+        legal_entity_name = %legal_entity_name,
         livemode = config.deployment.livemode,
         providers = config.providers.len(),
         merchant_clients = config.merchant_clients.len(),
@@ -947,6 +959,7 @@ mod tests {
                 livemode: false,
                 public_base_url: "http://localhost:8080".to_owned(),
                 surfaces: None,
+                legal_entity: None,
             },
             providers: codes
                 .iter()
