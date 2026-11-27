@@ -1,0 +1,43 @@
+[package]
+name = "vpay-telemetry"
+description = "OpenTelemetry for vpay: traces, metrics and logs through the OpenTelemetry SDK over OTLP/HTTP JSON, off unless an endpoint is set."
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# A collector in the process, for tests: it receives what the exporter sends and keeps it.
+testkit = ["dep:axum"]
+
+[dependencies]
+vpay-core.workspace = true
+axum = { workspace = true, optional = true }
+metrics.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+# The one reqwest of the workspace (0.13, rustls with no provider of its own): the OTLP exporter is handed a client
+# built from it, so no second HTTP client enters the graph. `blocking` is the client the SDK's own threads use.
+reqwest = { workspace = true, features = ["blocking"] }
+rustls.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+vpay-telemetry = { path = ".", features = ["testkit"] }
+axum.workspace = true
+metrics-exporter-prometheus.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }

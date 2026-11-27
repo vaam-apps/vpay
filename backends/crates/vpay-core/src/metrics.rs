@@ -5,7 +5,7 @@
 //! module owns the vocabulary and each binary owns the exporter it renders
 //! through; [`describe_all`] is the one call that connects the two, and it is
 //! a no-op until a recorder exists. Why a library must not install one, why
-//! the names are `const`s, and where each of the fifteen is emitted:
+//! the names are `const`s, and where each of the twenty-one is emitted:
 //! [docs/reference/vpay-core.md § metrics](../../../../docs/reference/vpay-core.md#metrics).
 //!
 //! # The list
@@ -32,9 +32,20 @@
 //! vpay_account_holder_lookups_total{outcome}                        counter
 //! vpay_callback_endpoint_checks_total{provider,state}               counter
 //! vpay_provider_callbacks_total{provider,verdict}                   counter
+//! vpay_webhook_deliveries_pending                                   gauge
+//! vpay_webhook_oldest_pending_overdue_seconds                       gauge
+//! vpay_db_pool_connections{state}                                   gauge
+//! vpay_db_pool_max_connections                                      gauge
+//! vpay_telemetry_exports_total{signal,result}                       counter
+//! vpay_telemetry_dropped_total{signal}                              counter
 //! ```
 //!
-//! The last three lines are the only ones that are **not** in that plan
+//! The six lines after `vpay_provider_callbacks_total` landed with the
+//! OpenTelemetry export (ANR-1168, ADR-0039): the webhook delivery backlog,
+//! the database pool and the exporter's own two counters; see
+//! [`WEBHOOK_DELIVERIES_PENDING`] and [`TELEMETRY_EXPORTS_TOTAL`].
+//!
+//! Of the earlier ones, the last three are the only ones that are **not** in that plan
 //! document. The first landed with `GET /v1/account_holders` (issue #47),
 //! after it was written. It is here rather than folded into
 //! `vpay_http_requests_total` because the four outcomes a lookup has are not
@@ -232,6 +243,102 @@ pub const CALLBACK_ENDPOINT_CHECKS_TOTAL: &str = "vpay_callback_endpoint_checks_
 /// by whether `verified` is also non-zero.
 pub const PROVIDER_CALLBACKS_TOTAL: &str = "vpay_provider_callbacks_total";
 
+/// Webhook deliveries that are owed an attempt (`webhook_deliveries.state =
+/// 'pending'`): the delivery backlog.
+///
+/// Sampled by the worker once a gauge interval (60 s) from
+/// the partial index `webhook_deliveries_live_idx`, so the read is the size of
+/// the *outstanding* work and never a scan of the delivery log. A property of
+/// the table, like [`JOBS_OLDEST_CLAIMABLE_AGE_SECONDS`]: every replica
+/// reports the same value, and an alert reads it without summing across pods.
+/// Left unwritten when the read failed, so a database outage is a stale
+/// series and not a zero.
+///
+/// It says nothing about *why* deliveries are pending: a receiver that is
+/// down, a ladder rung not yet due and a worker that is not running all look
+/// alike here. Read it with [`WEBHOOK_OLDEST_PENDING_OVERDUE_SECONDS`] and
+/// [`WEBHOOK_DELIVERIES_TOTAL`].
+pub const WEBHOOK_DELIVERIES_PENDING: &str = "vpay_webhook_deliveries_pending";
+
+/// How long the most overdue pending webhook delivery has been past its
+/// `next_attempt_at`, in seconds; `0` when nothing pending is due.
+///
+/// Clamped at zero on purpose, unlike [`JOBS_OLDEST_CLAIMABLE_AGE_SECONDS`]:
+/// a delivery waiting for a retry rung that is still in the future is not
+/// late, and a gauge that went negative for it would read as "ahead of
+/// schedule". A value that keeps growing is a worker that is not delivering.
+pub const WEBHOOK_OLDEST_PENDING_OVERDUE_SECONDS: &str =
+    "vpay_webhook_oldest_pending_overdue_seconds";
+
+/// The database pool of this process, by `state`: `idle` and `in_use`
+/// connections (see [`db_pool_state`]).
+///
+/// Per process, unlike the two gauges above: each replica has its own pool,
+/// and a sum across pods is the deployment's connection count. Sampled by the
+/// worker's gauge loop and, in `serve` mode, by the server's own.
+pub const DB_POOL_CONNECTIONS: &str = "vpay_db_pool_connections";
+
+/// The configured upper bound of this process's database pool. Beside
+/// [`DB_POOL_CONNECTIONS`] it is what makes "the pool is full" a ratio.
+pub const DB_POOL_MAX_CONNECTIONS: &str = "vpay_db_pool_max_connections";
+
+/// Export requests of the OpenTelemetry exporter that the collector accepted
+/// or refused, by `signal` (`traces`, `metrics`, `logs`) and `result` (`ok`,
+/// `failed`). Emitted by `vpay-telemetry` only, and only when an endpoint is
+/// configured: with telemetry off the series does not exist, which is the
+/// truth, rather than a zero that reads as "exporting fine".
+pub const TELEMETRY_EXPORTS_TOTAL: &str = "vpay_telemetry_exports_total";
+
+/// Spans, logs and metric series the exporter dropped (a full bounded queue,
+/// or the cap on distinct metric series), by `signal`. Recording never blocks
+/// a request: it drops, and this counts what it dropped, so a dashboard built
+/// on the other series can say it is incomplete.
+pub const TELEMETRY_DROPPED_TOTAL: &str = "vpay_telemetry_dropped_total";
+
+/// The label keys a series of this vocabulary may carry.
+///
+/// The OpenTelemetry bridge forwards no other key: a label added to a metric
+/// above without a line here is exported to the Prometheus listener and not to
+/// the collector, and `every_documented_label_is_in_the_label_list` fails the
+/// build. None of these can hold an id, an amount, a person's number or a
+/// secret: every value is a closed set (a route pattern, a rail code, a state
+/// word, an error code), and `docs/reference/vpay-core.md` says which.
+pub const LABELS: &[&str] = &[
+    "route",
+    "method",
+    "status",
+    "provider",
+    "operation",
+    "error_kind",
+    "from",
+    "to",
+    "kind",
+    "outcome",
+    "category",
+    "code",
+    "severity",
+    "state",
+    "verdict",
+    "version",
+    "git_sha",
+    "signal",
+    "result",
+];
+
+/// The `state` label on [`DB_POOL_CONNECTIONS`].
+///
+/// ```
+/// use vpay_core::metrics::db_pool_state;
+///
+/// assert_eq!([db_pool_state::IDLE, db_pool_state::IN_USE], ["idle", "in_use"]);
+/// ```
+pub mod db_pool_state {
+    /// Open and waiting in the pool.
+    pub const IDLE: &str = "idle";
+    /// Open and checked out by a request, a job or a listener.
+    pub const IN_USE: &str = "in_use";
+}
+
 /// Every name in this module, in the order the module doc lists them.
 ///
 /// Public so a binary's own test can assert its `/metrics` output against the
@@ -271,6 +378,12 @@ pub const ALL: &[&str] = &[
     ACCOUNT_HOLDER_LOOKUPS_TOTAL,
     CALLBACK_ENDPOINT_CHECKS_TOTAL,
     PROVIDER_CALLBACKS_TOTAL,
+    WEBHOOK_DELIVERIES_PENDING,
+    WEBHOOK_OLDEST_PENDING_OVERDUE_SECONDS,
+    DB_POOL_CONNECTIONS,
+    DB_POOL_MAX_CONNECTIONS,
+    TELEMETRY_EXPORTS_TOTAL,
+    TELEMETRY_DROPPED_TOTAL,
 ];
 
 /// The `outcome` label on [`JOBS_COMPLETED_TOTAL`].
@@ -716,6 +829,39 @@ pub fn describe_all() {
          secret, during a rotation), invalid, not_checked, no_secret or unavailable. \
          invalid and unavailable did not pull the charge's poll forward."
     );
+    describe_gauge!(
+        WEBHOOK_DELIVERIES_PENDING,
+        Unit::Count,
+        "Webhook deliveries owed an attempt (state pending): the delivery backlog. Not written \
+         when the read failed."
+    );
+    describe_gauge!(
+        WEBHOOK_OLDEST_PENDING_OVERDUE_SECONDS,
+        Unit::Seconds,
+        "Seconds the most overdue pending webhook delivery is past its next attempt; zero when \
+         none is due. Not written when the read failed."
+    );
+    describe_gauge!(
+        DB_POOL_CONNECTIONS,
+        Unit::Count,
+        "Connections of this process's database pool, by state: idle or in_use."
+    );
+    describe_gauge!(
+        DB_POOL_MAX_CONNECTIONS,
+        Unit::Count,
+        "The configured maximum of this process's database pool."
+    );
+    describe_counter!(
+        TELEMETRY_EXPORTS_TOTAL,
+        Unit::Count,
+        "OpenTelemetry export requests, by signal and by result: ok or failed. Absent when \
+         telemetry is off."
+    );
+    describe_counter!(
+        TELEMETRY_DROPPED_TOTAL,
+        Unit::Count,
+        "Spans, logs and metric series the OpenTelemetry exporter dropped, by signal."
+    );
 }
 
 #[cfg(test)]
@@ -723,7 +869,7 @@ mod tests {
     use metrics_exporter_prometheus::PrometheusBuilder;
 
     use super::{
-        ALL, UNKNOWN_GIT_SHA, describe_all, git_sha, job_outcome, record_build_info,
+        ALL, LABELS, UNKNOWN_GIT_SHA, describe_all, git_sha, job_outcome, record_build_info,
         record_error_event, webhook_outcome,
     };
     use crate::error::{Category, Classify};
@@ -808,6 +954,41 @@ mod tests {
                 name.bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
                 "{name} is not [a-z0-9_]+, which Prometheus requires"
+            );
+        }
+    }
+
+    /// Every label key the module doc writes in a `{...}` set is in
+    /// [`LABELS`], and every entry of [`LABELS`] is used by one: the list the
+    /// OpenTelemetry bridge forwards is the list of what is documented.
+    #[test]
+    fn every_documented_label_is_in_the_label_list() {
+        let mut used = std::collections::BTreeSet::new();
+        for line in SOURCE.lines().take_while(|l| l.starts_with("//!")) {
+            let Some((_, rest)) = line.split_once('{') else {
+                continue;
+            };
+            let Some((set, _)) = rest.split_once('}') else {
+                continue;
+            };
+            if !line
+                .trim_start_matches("//!")
+                .trim_start()
+                .starts_with("vpay_")
+            {
+                continue;
+            }
+            for label in set.split(',') {
+                used.insert(label.trim().to_owned());
+            }
+        }
+        for label in &used {
+            assert!(LABELS.contains(&label.as_str()), "{label} is not in LABELS");
+        }
+        for label in LABELS {
+            assert!(
+                used.contains(*label),
+                "{label} is in LABELS and on no metric"
             );
         }
     }

@@ -13,6 +13,7 @@ members = [
     "backends/crates/vpay-api",
     "backends/crates/vpay-wire",
     "backends/crates/vpay-worker",
+    "backends/crates/vpay-telemetry",
     "backends/crates/vpay-testkit",
     "backends/apps/vpay-server",
     "backends/tests/integration",
@@ -433,9 +434,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # `evmap`, `indexmap`, `metrics-util`, `quanta` and `thiserror` — no HTTP, no
 # TLS, no runtime.
 #
-# OTLP traces are deliberately NOT here: step-6 decision (6) defers them and
-# `docs/status.md` says so, which is why the unused `opentelemetry = "0.27"`
-# pin that used to sit on this line is gone rather than kept "for later".
+# OpenTelemetry (ANR-1168, ADR-0039): the API, the SDK, the OTLP exporter and
+# the `tracing` bridge, used by `vpay-telemetry` only. They move together
+# (0.33.x for the first three, 0.34 for the bridge, which needs
+# `opentelemetry` 0.33). `http-json` with a caller-supplied reqwest client:
+# no tonic, no gRPC, no second reqwest, and no aws-lc-rs or OpenSSL (`cargo
+# tree -i aws-lc-rs` must stay empty; `deny.toml` bans it). The unused
+# `opentelemetry = "0.27"` pin of the step-6 note was removed long ago and
+# this is its replacement, for a reason `docs/adr/0039` gives.
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace", "metrics", "logs"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace", "metrics", "logs"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-json", "reqwest-blocking-client", "trace", "metrics", "logs"] }
+tracing-opentelemetry = { version = "0.34.0", default-features = false }
 metrics = "=0.24.6"
 metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
 
@@ -546,6 +556,7 @@ vpay-adapter-orange-money = { path = "backends/crates/vpay-adapter-orange-money"
 vpay-adapter-notchpay = { path = "backends/crates/vpay-adapter-notchpay", version = "0.19.0" } # x-release-please-version
 vpay-api = { path = "backends/crates/vpay-api", version = "0.19.0" } # x-release-please-version
 vpay-worker = { path = "backends/crates/vpay-worker", version = "0.19.0" } # x-release-please-version
+vpay-telemetry = { path = "backends/crates/vpay-telemetry", version = "0.19.0" } # x-release-please-version
 vpay-testkit = { path = "backends/crates/vpay-testkit", version = "0.19.0" } # x-release-please-version
 vpay-wire = { path = "backends/crates/vpay-wire", version = "0.19.0" } # x-release-please-version
 # The merchant SDK is a workspace member like the rest, but it is not a vpay

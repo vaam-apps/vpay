@@ -23,7 +23,7 @@ page points at it rather than restating it.
 | `failure`    | the closed taxonomy                     | why the policy lives on the code                                                                                 |
 | `settlement` | `settle` and `contradiction`            | why this is a sibling of `state` and not part of it                                                              |
 | `error`      | `Classify`, `Category`, `source_chain`  | the three tiers and the five questions ([ADR-0011](../adr/0011-error-modelling.md))                              |
-| `metrics`    | the fifteen names and their labels      | why a library describes but does not install, and the caveats on four of the series                              |
+| `metrics`    | the twenty-one names and their labels   | why a library describes but does not install, and the caveats on four of the series                              |
 
 ---
 
@@ -463,6 +463,31 @@ immediately _after_ installing one.
 `describing_without_a_recorder_is_harmless` pins that: it is exactly what
 happens in every test binary in this workspace that links `vpay-core` and
 installs nothing.
+
+### The six series added with the OpenTelemetry export (2026-11-27, ANR-1168)
+
+`vpay_webhook_deliveries_pending` and `vpay_webhook_oldest_pending_overdue_seconds`
+are the delivery backlog, sampled once a minute by the worker's gauge loop from
+`vpay_db::WebhookDeliveries::backlog` (one statement over the partial index
+`webhook_deliveries_live_idx`, so its cost is the outstanding work and never
+the delivery log). **A failed read writes nothing**: a stale series is honest,
+a zero would read as an empty backlog. The overdue age is clamped at zero on
+purpose, unlike the job-queue gauge above: a retry rung still in the future is
+not late. `vpay_db_pool_connections{state}` (`idle`, `in_use`) and
+`vpay_db_pool_max_connections` are this _process's_ pool, read from the pool's
+own counters with no round trip, by the worker's gauge loop and, in `serve`
+mode, by a task in `vpay-server`; a sum across pods is the deployment's
+connection count. `vpay_telemetry_exports_total{signal,result}` and
+`vpay_telemetry_dropped_total{signal}` are the exporter's own, and **do not
+exist when telemetry is off**.
+
+`LABELS` is the list of label keys the OpenTelemetry bridge forwards, and
+`every_documented_label_is_in_the_label_list` holds it to the labels this
+module documents, in both directions. Payment-intent counts by state are **not**
+a series: `payment_intents.status` has no index (migration 0037), so a gauge
+would scan the table on every sample.
+[ADR-0039](../adr/0039-opentelemetry-through-the-sdk-and-generated-dashboards.md)
+has the reasoning.
 
 ### The account-holder series is the one name the plan document does not have
 

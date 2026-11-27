@@ -184,3 +184,8 @@ CHANGELOG.md
 # input, `schemas/typescript-client/package.json.j2`, is a Jinja template
 # prettier cannot parse and is never selected.
 frontends/packages/dash-client/
+
+# `deploy/dashboards/` is written by `tools/dashboards/*.py` (standard-library Python) and CI's `dashboards-check`
+# fails on any difference from what they generate, README included. Prettier would reflow the JSON arrays and the
+# README's table, and the drift check would then fail on the reflow: the generator is the formatter.
+deploy/dashboards/

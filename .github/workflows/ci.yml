@@ -580,6 +580,15 @@ jobs:
       # pull request rather than only on whichever machine last ran it.
       - name: verify-docs (a report; never fails)
         run: cargo xtask verify-docs
+      # New 2026-11-27 (ANR-1168, ADR-0039). Not one of the eighteen gates (it
+      # is not a `verify` dependency, so `count:verify-gates` is unmoved): the
+      # Grafana JSON in deploy/dashboards/ is written by tools/dashboards/
+      # (standard-library Python). Regenerate, then fail on any difference or
+      # any file the scripts made that is not committed. What each panel
+      # queries is held to the metric vocabulary by
+      # `vpay-telemetry/tests/dashboards.rs`, which runs in the `rust` job.
+      - name: dashboards-check (the dashboards are generated; no drift)
+        run: just dashboards-check
 
   rust:
     name: rust

@@ -1000,6 +1000,11 @@ async fn gauge_loop(
                 QueueAgeRead::Unknown
             }
         };
+        // The pool (no I/O) and the webhook backlog. A failed read writes
+        // nothing: a stale series is honest, a zero is not.
+        if let Err(error) = vpay_db::gauges::sample(repositories.as_ref()).await {
+            tracing::warn!(error = %error, "could not read the webhook delivery backlog");
+        }
         let (behind_seconds, gauge_value) = queue_age(read);
         if let Some(value) = gauge_value {
             metrics::gauge!(JOBS_OLDEST_CLAIMABLE_AGE_SECONDS).set(value);
