@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.20.0](https://github.com/vaam-apps/vpay/compare/v0.19.0...v0.20.0) (2026-11-28)
+
+
+### Features
+
+* **observability:** export OpenTelemetry through the SDK and ship generated dashboards ([#426](https://github.com/vaam-apps/vpay/issues/426)) ([48a520e](https://github.com/vaam-apps/vpay/commit/48a520e0e81025ce60c91cd3fb00ab1b71faed20))
+
+
+### Bug Fixes
+
+* **telemetry:** series-cap stack overflow and the review findings of [#426](https://github.com/vaam-apps/vpay/issues/426) ([#428](https://github.com/vaam-apps/vpay/issues/428)) ([7a9fee5](https://github.com/vaam-apps/vpay/commit/7a9fee509aa38fafa6ff7e6b8d310ce9b462c93d))
+
+
+### Documentation
+
+* **readme:** a features table with a status per row, from docs/status.md ([#424](https://github.com/vaam-apps/vpay/issues/424)) ([0eccf9f](https://github.com/vaam-apps/vpay/commit/0eccf9f0326dbbd9fa9245ebb26aefb2db54f9a6))
+
+
+### Continuous Integration
+
+* cancel stale runs on a newer push, a merge or a deleted branch ([#427](https://github.com/vaam-apps/vpay/issues/427)) ([2aeb2c3](https://github.com/vaam-apps/vpay/commit/2aeb2c323e47c7fecc61d7569276f5b4211b24a2))
+* count the test binaries the telemetry crate added ([#429](https://github.com/vaam-apps/vpay/issues/429)) ([fef91eb](https://github.com/vaam-apps/vpay/commit/fef91ebcbb3132dbab1a971f38e070d573fb64d2))
+* lock the cargo cache mounts so parallel image builds do not race ([#430](https://github.com/vaam-apps/vpay/issues/430)) ([76e379a](https://github.com/vaam-apps/vpay/commit/76e379a80771d72ee061e431230105781e4788ed))
+
 ## [0.19.0](https://github.com/vaam-apps/vpay/compare/v0.18.0...v0.19.0) (2026-11-27)
 
 
