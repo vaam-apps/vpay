@@ -1,6 +1,6 @@
-# ANR-1168: OpenTelemetry export, and the dashboards
+# OpenTelemetry export, and the dashboards
 
-_Written 2026-11-27 on `claude/anr-1168-otel`, branched from `origin/master` (`0eccf9f0`). What changed is in
+_Written 2026-11-27 on a branch from `origin/master` (`0eccf9f0`). What changed is in
 [infrastructure.md](../infrastructure.md) (the OpenTelemetry row),
 [ADR-0039](../../adr/0039-opentelemetry-through-the-sdk-and-generated-dashboards.md) and
 [`vpay-telemetry`'s README](../../../backends/crates/vpay-telemetry/README.md); this page is what was run, and what was not._
@@ -57,5 +57,9 @@ Toolchain `1.98.0` (`rust-toolchain.toml`), target dir on tmpfs.
 - `vpay-server`'s own subprocess tests (`tests/cli.rs`, which boot the binary against Postgres) and the integration and
   conformance suites. `install_process_defaults` was compiled and clippy-checked but its telemetry branch has no
   subprocess test: the telemetry-off path is the one `tests/cli.rs` exercises.
+- **The musl/scratch image** (`backends/Dockerfile`) was **not built** with the new crates. What is known instead is
+  the dependency graph on the host target: `cargo tree` shows no `-sys` crate, no `tonic` and no `aws-lc` under
+  `vpay-telemetry` (`rustls` is on ring). That the static musl link succeeds, and that the binary runs in the
+  scratch image, is **unverified**.
 - The Helm chart: nothing wires `OTEL_EXPORTER_OTLP_ENDPOINT` or the headers file into it.
 - No span for a worker job or a rail call; no payment-intent counts by state (no index to count by).

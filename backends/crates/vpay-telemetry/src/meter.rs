@@ -9,7 +9,9 @@
 //! [`vpay_core::metrics::ALL`] is not forwarded, and a label whose key is not in [`vpay_core::metrics::LABELS`] is
 //! dropped from the series (the series is still counted, without it). The vocabulary holds no id, amount, phone
 //! number or secret, and a test holds it to that. The number of distinct series per process is capped
-//! ([`MAX_SERIES`]); a series past the cap is not forwarded and is counted in `vpay_telemetry_dropped_total`.
+//! ([`MAX_SERIES`]); a series past the cap is not forwarded and its registration is counted in `vpay_telemetry_dropped_total{signal="metrics"}`,
+//! straight on the OpenTelemetry instrument (never through the facade, which would register another series).
+//! A handle is made once per series and handed back on every later registration of it.
 //! Names, units and descriptions are the facade's own (`describe_*`), so the dashboards' names do not depend on this
 //! file.
 
@@ -65,7 +67,24 @@ pub struct Bridge {
     counters: Mutex<HashMap<String, OtelCounter<u64>>>,
     gauges: Mutex<HashMap<String, OtelGauge<f64>>>,
     histograms: Mutex<HashMap<String, OtelHistogram<f64>>>,
-    series: Mutex<HashMap<Key, ()>>,
+    handles: Mutex<SeriesHandles>,
+}
+
+/// The facade handles already made, one per series (a name with its labels). The facade asks the recorder for a
+/// handle on every `counter!`, `gauge!` or `histogram!` call, and a gauge's `increment` and a counter's `absolute`
+/// keep their state in the handle: giving back the same handle for the same series is what makes them right across
+/// calls. Their number is the cap on series.
+#[derive(Default)]
+struct SeriesHandles {
+    counters: HashMap<Key, Counter>,
+    gauges: HashMap<Key, Gauge>,
+    histograms: HashMap<Key, Histogram>,
+}
+
+impl SeriesHandles {
+    fn len(&self) -> usize {
+        self.counters.len() + self.gauges.len() + self.histograms.len()
+    }
 }
 
 impl std::fmt::Debug for Bridge {
@@ -82,15 +101,34 @@ impl Bridge {
     /// A bridge that makes its instruments on `meter`.
     #[must_use]
     pub fn new(meter: Meter) -> Self {
+        // The counter of dropped series is made here and counted on directly, never through the facade: a drop
+        // counted through `metrics::counter!` would register a series, which is the thing that was just refused.
+        // `counter()` finds this same instrument by name for the other signals' drops.
+        let dropped = meter
+            .u64_counter(TELEMETRY_DROPPED_TOTAL)
+            .with_description(
+                "Spans, logs and metric series the OpenTelemetry exporter dropped, by signal.",
+            )
+            .build();
         Self {
             meter,
             described: Mutex::new(Descriptions {
                 by_name: HashMap::new(),
             }),
-            counters: Mutex::default(),
+            counters: Mutex::new(HashMap::from([(
+                TELEMETRY_DROPPED_TOTAL.to_owned(),
+                dropped,
+            )])),
             gauges: Mutex::default(),
             histograms: Mutex::default(),
-            series: Mutex::default(),
+            handles: Mutex::default(),
+        }
+    }
+
+    /// Counts a series refused at the cap (one per registration of it), straight on the instrument.
+    fn count_dropped_series(&self) {
+        if let Some(instrument) = locked(&self.counters).get(TELEMETRY_DROPPED_TOTAL) {
+            instrument.add(1, &[KeyValue::new("signal", "metrics")]);
         }
     }
 
@@ -109,27 +147,22 @@ impl Bridge {
         (otel_unit(unit).to_owned(), text.to_owned())
     }
 
-    /// Whether this series may be forwarded: its name is in the vocabulary, and the cap is not spent.
-    fn admit(&self, key: &Key) -> bool {
-        if !ALL.contains(&key.name()) {
-            return false;
-        }
-        let mut series = locked(&self.series);
-        if series.contains_key(key) {
-            return true;
-        }
-        if series.len() >= MAX_SERIES {
-            drop(series);
-            // The vocabulary's own counter, through the facade: it is one series of a closed name.
-            metrics::counter!(TELEMETRY_DROPPED_TOTAL, "signal" => "metrics").increment(1);
-            return false;
-        }
-        series.insert(key.clone(), ());
-        true
+    /// Whether a series of this key may be forwarded: its name is in the vocabulary.
+    fn in_vocabulary(key: &Key) -> bool {
+        ALL.contains(&key.name())
     }
 
     fn counter(&self, key: &Key) -> Counter {
-        if !self.admit(key) {
+        if !Self::in_vocabulary(key) {
+            return Counter::noop();
+        }
+        let mut handles = locked(&self.handles);
+        if let Some(handle) = handles.counters.get(key) {
+            return handle.clone();
+        }
+        if handles.len() >= MAX_SERIES {
+            drop(handles);
+            self.count_dropped_series();
             return Counter::noop();
         }
         let name = key.name().to_owned();
@@ -147,15 +180,26 @@ impl Bridge {
                 })
                 .clone()
         };
-        Counter::from_arc(Arc::new(CounterHandle {
+        let handle = Counter::from_arc(Arc::new(CounterHandle {
             instrument,
             attributes: attributes(key),
             last_absolute: AtomicU64::new(0),
-        }))
+        }));
+        handles.counters.insert(key.clone(), handle.clone());
+        handle
     }
 
     fn gauge(&self, key: &Key) -> Gauge {
-        if !self.admit(key) {
+        if !Self::in_vocabulary(key) {
+            return Gauge::noop();
+        }
+        let mut handles = locked(&self.handles);
+        if let Some(handle) = handles.gauges.get(key) {
+            return handle.clone();
+        }
+        if handles.len() >= MAX_SERIES {
+            drop(handles);
+            self.count_dropped_series();
             return Gauge::noop();
         }
         let name = key.name().to_owned();
@@ -173,15 +217,26 @@ impl Bridge {
                 })
                 .clone()
         };
-        Gauge::from_arc(Arc::new(GaugeHandle {
+        let handle = Gauge::from_arc(Arc::new(GaugeHandle {
             instrument,
             attributes: attributes(key),
             current: AtomicU64::new(0f64.to_bits()),
-        }))
+        }));
+        handles.gauges.insert(key.clone(), handle.clone());
+        handle
     }
 
     fn histogram(&self, key: &Key) -> Histogram {
-        if !self.admit(key) {
+        if !Self::in_vocabulary(key) {
+            return Histogram::noop();
+        }
+        let mut handles = locked(&self.handles);
+        if let Some(handle) = handles.histograms.get(key) {
+            return handle.clone();
+        }
+        if handles.len() >= MAX_SERIES {
+            drop(handles);
+            self.count_dropped_series();
             return Histogram::noop();
         }
         let name = key.name().to_owned();
@@ -204,10 +259,12 @@ impl Bridge {
                 })
                 .clone()
         };
-        Histogram::from_arc(Arc::new(HistogramHandle {
+        let handle = Histogram::from_arc(Arc::new(HistogramHandle {
             instrument,
             attributes: attributes(key),
-        }))
+        }));
+        handles.histograms.insert(key.clone(), handle.clone());
+        handle
     }
 }
 
@@ -392,5 +449,136 @@ impl<R: Recorder> Recorder for Fanout<R> {
             Some(bridge) => Histogram::from_arc(Arc::new(Both(first, bridge.histogram(key)))),
             None => first,
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use opentelemetry::metrics::MeterProvider;
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+    use vpay_core::metrics::{HTTP_REQUESTS_TOTAL, JOBS_OLDEST_CLAIMABLE_AGE_SECONDS};
+
+    struct Rig {
+        provider: SdkMeterProvider,
+        exporter: InMemoryMetricExporter,
+        bridge: Arc<Bridge>,
+        fanout: Fanout<metrics_exporter_prometheus::PrometheusRecorder>,
+    }
+
+    fn rig() -> Rig {
+        let exporter = InMemoryMetricExporter::default();
+        let reader = PeriodicReader::builder(exporter.clone())
+            .with_interval(std::time::Duration::from_secs(3600))
+            .build();
+        let provider = SdkMeterProvider::builder().with_reader(reader).build();
+        let bridge = Arc::new(Bridge::new(provider.meter("test")));
+        let primary = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        Rig {
+            provider,
+            exporter,
+            bridge: Arc::clone(&bridge),
+            fanout: Fanout::new(primary, Some(bridge)),
+        }
+    }
+
+    impl Rig {
+        /// The data points of the newest export of `name`: its attributes as `k=v,...` and its value.
+        fn points(&self, name: &str) -> Vec<(String, f64)> {
+            let _ = self.provider.force_flush();
+            let all = self.exporter.get_finished_metrics().unwrap();
+            let Some(last) = all.last() else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            for scope in last.scope_metrics() {
+                for metric in scope.metrics().filter(|m| m.name() == name) {
+                    match metric.data() {
+                        AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                            for p in sum.data_points() {
+                                out.push((attrs(p.attributes()), p.value() as f64));
+                            }
+                        }
+                        AggregatedMetrics::F64(MetricData::Gauge(gauge)) => {
+                            for p in gauge.data_points() {
+                                out.push((attrs(p.attributes()), p.value()));
+                            }
+                        }
+                        other => panic!("unexpected data for {name}: {other:?}"),
+                    }
+                }
+            }
+            out
+        }
+    }
+
+    fn attrs<'a>(it: impl Iterator<Item = &'a KeyValue>) -> String {
+        let mut v: Vec<String> = it.map(|kv| format!("{}={}", kv.key, kv.value)).collect();
+        v.sort();
+        v.join(",")
+    }
+
+    #[test]
+    fn series_past_the_cap_are_dropped_and_counted_without_recursing() {
+        let rig = rig();
+        let extra = 50;
+        metrics::with_local_recorder(&rig.fanout, || {
+            for i in 0..(MAX_SERIES + extra) {
+                metrics::counter!(HTTP_REQUESTS_TOTAL, "route" => format!("/r{i}")).increment(1);
+            }
+            // A series already held still works at the cap, and a refused one stays refused.
+            metrics::counter!(HTTP_REQUESTS_TOTAL, "route" => "/r0").increment(1);
+            metrics::counter!(HTTP_REQUESTS_TOTAL, "route" => format!("/r{}", MAX_SERIES + 1))
+                .increment(1);
+        });
+        let requests = rig.points(HTTP_REQUESTS_TOTAL);
+        // The bridge held exactly MAX_SERIES handles: the cap itself, which the SDK's own cardinality limit (2000
+        // per instrument, plus an overflow series) is lower than and so cannot prove.
+        assert_eq!(
+            locked(&rig.bridge.handles).len(),
+            MAX_SERIES,
+            "the cap holds"
+        );
+        assert!(requests.len() <= MAX_SERIES);
+        assert!(
+            requests.iter().any(|(a, v)| a == "route=/r0" && *v >= 2.0),
+            "a held series still counts at the cap"
+        );
+        let dropped = rig.points(TELEMETRY_DROPPED_TOTAL);
+        assert_eq!(
+            dropped,
+            vec![("signal=metrics".to_owned(), (extra + 1) as f64)],
+            "{extra} refused series and one registered again, counted and exported"
+        );
+    }
+
+    #[test]
+    fn a_gauge_increment_accumulates_across_calls() {
+        let rig = rig();
+        metrics::with_local_recorder(&rig.fanout, || {
+            metrics::gauge!(JOBS_OLDEST_CLAIMABLE_AGE_SECONDS).set(10.0);
+            metrics::gauge!(JOBS_OLDEST_CLAIMABLE_AGE_SECONDS).increment(2.5);
+            metrics::gauge!(JOBS_OLDEST_CLAIMABLE_AGE_SECONDS).increment(2.5);
+            metrics::gauge!(JOBS_OLDEST_CLAIMABLE_AGE_SECONDS).decrement(1.0);
+        });
+        assert_eq!(
+            rig.points(JOBS_OLDEST_CLAIMABLE_AGE_SECONDS),
+            vec![(String::new(), 14.0)]
+        );
+    }
+
+    #[test]
+    fn a_counter_absolute_forwards_only_growth_across_calls() {
+        let rig = rig();
+        metrics::with_local_recorder(&rig.fanout, || {
+            metrics::counter!(HTTP_REQUESTS_TOTAL).absolute(5);
+            metrics::counter!(HTTP_REQUESTS_TOTAL).absolute(5);
+            metrics::counter!(HTTP_REQUESTS_TOTAL).absolute(8);
+            // A lower total is a reset of the source, not a negative increment.
+            metrics::counter!(HTTP_REQUESTS_TOTAL).absolute(3);
+        });
+        assert_eq!(rig.points(HTTP_REQUESTS_TOTAL), vec![(String::new(), 8.0)]);
     }
 }

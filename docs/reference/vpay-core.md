@@ -464,14 +464,17 @@ immediately _after_ installing one.
 happens in every test binary in this workspace that links `vpay-core` and
 installs nothing.
 
-### The six series added with the OpenTelemetry export (2026-11-27, ANR-1168)
+### The six series added with the OpenTelemetry export (2026-11-27)
 
 `vpay_webhook_deliveries_pending` and `vpay_webhook_oldest_pending_overdue_seconds`
 are the delivery backlog, sampled once a minute by the worker's gauge loop from
 `vpay_db::WebhookDeliveries::backlog` (one statement over the partial index
 `webhook_deliveries_live_idx`, so its cost is the outstanding work and never
-the delivery log). **A failed read writes nothing**: a stale series is honest,
-a zero would read as an empty backlog. The overdue age is clamped at zero on
+the delivery log). **A failed read writes nothing**: a zero would read as an empty
+backlog, so the gauge keeps its last value. That value is exported again at every
+interval with a fresh timestamp, so **a stale reading is not visible in the metric**
+(a flat line looks like a flat backlog); the only trace is the log line of the failed
+read, and no failure counter exists. The overdue age is clamped at zero on
 purpose, unlike the job-queue gauge above: a retry rung still in the future is
 not late. `vpay_db_pool_connections{state}` (`idle`, `in_use`) and
 `vpay_db_pool_max_connections` are this _process's_ pool, read from the pool's

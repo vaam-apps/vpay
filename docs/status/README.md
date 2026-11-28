@@ -77,7 +77,7 @@ rather than trusting this list to be exhaustive.
   it found, the API-level regression case, the mutation that turns each red,
   and what could not be run here.
 - [verification/2026-11-27-opentelemetry-export.md](verification/2026-11-27-opentelemetry-export.md) —
-  ANR-1168, ADR-0039: `vpay-telemetry` (metrics, spans and logs over OTLP/HTTP JSON
+  ADR-0039: `vpay-telemetry` (metrics, spans and logs over OTLP/HTTP JSON
   through the OpenTelemetry SDK, off unless an endpoint is set), six new series, three
   generated Grafana dashboards. Test counts, `cargo deny`, the dependency graph and
   what was **not** run: no real collector, Grafana or OpenObserve.

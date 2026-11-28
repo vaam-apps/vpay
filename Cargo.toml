@@ -434,7 +434,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # `evmap`, `indexmap`, `metrics-util`, `quanta` and `thiserror` — no HTTP, no
 # TLS, no runtime.
 #
-# OpenTelemetry (ANR-1168, ADR-0039): the API, the SDK, the OTLP exporter and
+# OpenTelemetry (ADR-0039): the API, the SDK, the OTLP exporter and
 # the `tracing` bridge, used by `vpay-telemetry` only. They move together
 # (0.33.x for the first three, 0.34 for the bridge, which needs
 # `opentelemetry` 0.33). `http-json` with a caller-supplied reqwest client:

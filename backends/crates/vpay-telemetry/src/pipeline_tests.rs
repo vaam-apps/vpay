@@ -355,7 +355,15 @@ fn guard_with(tracer: bool, logger: bool) -> crate::export::Guard {
 
 fn assert_only_ours_at_info_are_dispatched(guard: &crate::export::Guard) {
     let seen = interests(guard);
-    assert!(seen.len() >= 5, "{seen:?}");
+    // The layers' filters hint a maximum level of INFO, so the `tracing` macros do not even register a callsite
+    // above it (the verbose ones never reach `register_callsite`); the two INFO callsites do, and the foreign one
+    // is `Interest::never`.
+    assert!(seen.len() >= 2, "{seen:?}");
+    assert!(
+        seen.iter()
+            .any(|(t, l, _)| t == "vpay_worker" && *l == tracing::Level::INFO),
+        "{seen:?}"
+    );
     for (target, level, never) in &seen {
         let ours = target.starts_with("vpay") && *level <= tracing::Level::INFO;
         if ours {

@@ -88,7 +88,8 @@ pub struct Resource {
     pub service_version: String,
     /// `deployment.environment.name`, when set.
     pub environment: Option<String>,
-    /// `service.instance.id`, when set (a pod name).
+    /// `service.instance.id`: `OTEL_RESOURCE_ATTRIBUTES`' value, else `HOSTNAME` (a pod's name), else a UUID made at
+    /// start. Always set by `from_lookup`, so two replicas never share an identity.
     pub instance: Option<String>,
 }
 
@@ -336,7 +337,19 @@ impl Settings {
                 .get("deployment.environment.name")
                 .or_else(|| attributes.get("deployment.environment"))
                 .cloned(),
-            instance: attributes.get("service.instance.id").cloned(),
+            // Replicas must not share an identity, or a metrics store merges their series: the attribute, else the
+            // host name (a pod's name), else an id made now.
+            instance: Some(
+                attributes
+                    .get("service.instance.id")
+                    .cloned()
+                    .or_else(|| {
+                        get("HOSTNAME")
+                            .map(|v| v.trim().to_owned())
+                            .filter(|v| !v.is_empty())
+                    })
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            ),
         };
         let signals = Signals {
             traces: traces_url.is_some() && signal_on(&get, "OTEL_TRACES_EXPORTER")?,
@@ -375,6 +388,30 @@ mod tests {
             "1.2.3",
             |path| (path == "/headers").then(|| "Authorization: Bearer s3cret\n# c\n".to_owned()),
         )
+    }
+
+    #[test]
+    fn the_instance_id_is_the_attribute_then_the_hostname_then_a_fresh_uuid() {
+        let on = ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318");
+        let instance = |extra: &[(&str, &str)]| {
+            let mut vars = vec![on];
+            vars.extend_from_slice(extra);
+            settings(&vars).unwrap().unwrap().resource.instance.unwrap()
+        };
+        assert_eq!(
+            instance(&[
+                ("OTEL_RESOURCE_ATTRIBUTES", "service.instance.id=pod-1"),
+                ("HOSTNAME", "host-9")
+            ]),
+            "pod-1"
+        );
+        assert_eq!(instance(&[("HOSTNAME", " host-9 ")]), "host-9");
+        // No attribute and no (or an empty) host name: a UUID, and a different one each start.
+        let first = instance(&[("HOSTNAME", "  ")]);
+        let second = instance(&[]);
+        assert!(uuid::Uuid::parse_str(&first).is_ok(), "{first}");
+        assert!(uuid::Uuid::parse_str(&second).is_ok(), "{second}");
+        assert_ne!(first, second);
     }
 
     #[test]

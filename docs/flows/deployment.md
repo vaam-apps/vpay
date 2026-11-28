@@ -512,7 +512,10 @@ reverses that in part. With `OTEL_EXPORTER_OTLP_ENDPOINT` set, `serve` and
 `worker` also export the same metric vocabulary, one server span per HTTP
 request (route pattern, method, status: nothing else) and plain-worded logs
 over OTLP/HTTP JSON; `/metrics` is unchanged, and with no endpoint nothing is
-built. There is no span for a worker job or a rail call yet, so a slow
+built. Every replica reports a `service.instance.id` of its own, so a metrics store keeps their series apart:
+`OTEL_RESOURCE_ATTRIBUTES`' value if set, else the `HOSTNAME` environment variable (a pod's name, which
+Kubernetes sets), else a UUID made at start (it changes at every restart, so set `HOSTNAME` or the attribute
+where series should survive one). There is no span for a worker job or a rail call yet, so a slow
 request is still seen in `vpay_http_request_duration_seconds` and not
 decomposed below the request. [`vpay-telemetry`'s README](../../backends/crates/vpay-telemetry/README.md)
 has the variables and what leaves; [`deploy/dashboards`](../../deploy/dashboards/README.md) the dashboards.

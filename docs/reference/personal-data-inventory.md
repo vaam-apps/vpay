@@ -409,25 +409,25 @@ row in the table.)_ `verify-privacy-inventory` checks that surface ids are
 unique, that none collides with an element name, and that `surface` and
 `description` are present — and then **counts** the flag. An `enumerable: true`
 row is a claim that the surface is closed and knowable (OTLP traces do not
-are an allowlist of four span fields (`vpay_telemetry::filter::FIELDS`) and off
+are an allowlist of nine fields (`vpay_telemetry::filter::FIELDS`; only four appear on any span today) and off
 unless an endpoint is set, since 2026-11-27; the event store is one
 already-classified column; browser storage is one file; the observability
 listener is two routes), **not** evidence that anything re-checks it. The
 allowlist is held by `vpay-telemetry`'s own tests, not by this gate.
 
-| Surface           | Enumerable | Status                                                                                                                                                       |
-| ----------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `logs`            | no         | no static scanner over `tracing!` sites yet; the Debug-redaction rule, PR 4's `Display`-side redactions and one manual sweep (2026-11-17) are the only guard |
-| `metrics`         | no         | metric-label derivation is not centrally registered                                                                                                          |
-| `traces`          | yes        | OTLP traces off unless an endpoint is set (ADR-0039); then one server span per request, four allowlisted fields (`vpay_telemetry::filter::FIELDS`)           |
-| `event_store`     | yes        | `events.data` — redacted on customer erasure                                                                                                                 |
-| `webhook_payload` | no         | per-event projections (RFC-0002 D2) not yet implemented; payload == API object today                                                                         |
-| `browser_storage` | yes        | checkout page local memory on the payer's own device                                                                                                         |
-| `provider_rail`   | no         | no static scan of adapter request builders; guarded by `RefundTarget`'s redacting `Debug`                                                                    |
-| `merchant_api`    | no         | wire object projections are per-resource, not centrally registered                                                                                           |
-| `merchant_mcp`    | no         | `/mcp/v1`'s tool outputs (ADR-0033): `/v1`'s projections reshaped, so `merchant_api`'s gap; erasure cannot reach an agent host's copies                      |
-| `observability`   | yes        | `/livez` and `/metrics` on `--observability-bind`                                                                                                            |
-| `backup`          | no         | PITR/WAL and full backups — external store; retention of restore copies is a deployment obligation (RFC-0002 D13)                                            |
+| Surface           | Enumerable | Status                                                                                                                                                                                                                                                                |
+| ----------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `logs`            | no         | no static scanner over `tracing!` sites yet; the Debug-redaction rule, PR 4's `Display`-side redactions and one manual sweep (2026-11-17) are the only guard                                                                                                          |
+| `metrics`         | no         | metric-label derivation is not centrally registered                                                                                                                                                                                                                   |
+| `traces`          | yes        | OTLP traces off unless an endpoint is set (ADR-0039); then one server span per request, nine allowlisted fields, four on any span today (`vpay_telemetry::filter::FIELDS`); logs can carry `vpay.provider` and `vpay.operation`; `%`-recorded fields never reach logs |
+| `event_store`     | yes        | `events.data` — redacted on customer erasure                                                                                                                                                                                                                          |
+| `webhook_payload` | no         | per-event projections (RFC-0002 D2) not yet implemented; payload == API object today                                                                                                                                                                                  |
+| `browser_storage` | yes        | checkout page local memory on the payer's own device                                                                                                                                                                                                                  |
+| `provider_rail`   | no         | no static scan of adapter request builders; guarded by `RefundTarget`'s redacting `Debug`                                                                                                                                                                             |
+| `merchant_api`    | no         | wire object projections are per-resource, not centrally registered                                                                                                                                                                                                    |
+| `merchant_mcp`    | no         | `/mcp/v1`'s tool outputs (ADR-0033): `/v1`'s projections reshaped, so `merchant_api`'s gap; erasure cannot reach an agent host's copies                                                                                                                               |
+| `observability`   | yes        | `/livez` and `/metrics` on `--observability-bind`                                                                                                                                                                                                                     |
+| `backup`          | no         | PITR/WAL and full backups — external store; retention of restore copies is a deployment obligation (RFC-0002 D13)                                                                                                                                                     |
 
 A surface with `enumerable: false` is an **unmet criterion**: the gate records it
 and keeps #144 open on it rather than manufacturing a self-check (RFC-0002 PR 2).
