@@ -3255,7 +3255,18 @@ expected_ignored := "0"
 #
 # 58 -> 59 on 2026-11-19 (issue #412): `sdks/rust/tests/wire_golden.rs`, the
 # 0.16.0 envelope vector, is one more binary.
-expected_suites := "59"
+#
+# 59 -> 63 on 2026-11-28 (#426, the OpenTelemetry export, 48a520e): four
+# binaries, all in the new `vpay-telemetry` crate: its lib target
+# (`vpay-telemetry`, the unit tests of `filter`, `meter` and `pipeline_tests`)
+# and the three files under its `tests/`, `dashboards.rs`, `export.rs` and
+# `hang.rs`, each its own binary. #426 added them without moving this number,
+# so `just verify-ignored` has been red on master since (CI's `rust` job: "63 test
+# binaries listed, expected 59"). `vpay-server::cli` is not among them: it
+# was already counted. Measured the way the recipe measures it, read from CI run
+# 46079302465 (job 140774430782, master at aacb1b5, the merge-ready head of #428):
+# **2859 total, 63 test binaries, 0 ignored**. `min_tests` is a floor and stays.
+expected_suites := "63"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
