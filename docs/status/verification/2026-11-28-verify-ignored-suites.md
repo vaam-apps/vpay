@@ -13,12 +13,12 @@ said: `verify-ignored: 0 ignored (expected 0), 63 test binaries (expected 59), 2
 Found by diffing `git diff 2aeb2c3 48a520e --name-status` (added `tests/*.rs` and the crate) against the suite list
 printed by the recipe in the CI log:
 
-| Binary | Source |
-| --- | --- |
-| `vpay-telemetry` | the crate's lib target (unit tests) |
+| Binary                       | Source                                               |
+| ---------------------------- | ---------------------------------------------------- |
+| `vpay-telemetry`             | the crate's lib target (unit tests)                  |
 | `vpay-telemetry::dashboards` | `backends/crates/vpay-telemetry/tests/dashboards.rs` |
-| `vpay-telemetry::export` | `backends/crates/vpay-telemetry/tests/export.rs` |
-| `vpay-telemetry::hang` | `backends/crates/vpay-telemetry/tests/hang.rs` |
+| `vpay-telemetry::export`     | `backends/crates/vpay-telemetry/tests/export.rs`     |
+| `vpay-telemetry::hang`       | `backends/crates/vpay-telemetry/tests/hang.rs`       |
 
 `vpay-server::cli` was already counted before #426 and is not new.
 
