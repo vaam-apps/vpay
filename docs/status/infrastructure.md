@@ -8,6 +8,13 @@ How each of these was fixed, and what it cost, is in
 [infrastructure-history.md](infrastructure-history.md) and
 [sqlx-and-op-stores.md](sqlx-and-op-stores.md).
 
+**Added 2026-11-28: the `e2e (compose)` job failed at random while building the images, and the cause is fixed but not
+yet proven.** Two stages unpacked crates into the same cargo registry cache mount at once (BuildKit's default is
+`sharing=shared`, and cargo's unpack is not safe for concurrent writers: run 46086046163, `.cargo-ok … File exists`).
+Every cargo registry and git cache mount in `backends/Dockerfile` and `examples/shop/Dockerfile` is now
+`sharing=locked`. The job has not run since; see
+[verification/2026-11-28-cargo-cache-locked.md](verification/2026-11-28-cargo-cache-locked.md).
+
 **Added 2026-09-16 (wave 3 / arm G): the e2e/demo stack could not make a
 refund, and nothing said so.** `just gen-demo-keys` writes
 `.e2e/application-demo.yml`, whose `providers:` block **replaces**

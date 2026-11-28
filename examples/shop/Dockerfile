@@ -33,8 +33,8 @@ FROM rust:1.98.0-alpine3.22 AS sealer
 RUN apk add --no-cache bash musl-dev pkgconfig
 WORKDIR /build
 COPY Cargo.lock ./
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     cargo install wasm-bindgen-cli --locked \
         --version "$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/version = |"/, ""); print; exit}' Cargo.lock)"
 RUN rustup target add wasm32-unknown-unknown
@@ -48,8 +48,8 @@ COPY schemas ./schemas
 COPY sdks/rust ./sdks/rust
 COPY examples/merchant-demo ./examples/merchant-demo
 COPY sdks/nodejs/scripts ./sdks/nodejs/scripts
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/build/target \
     bash sdks/nodejs/scripts/build-wasm.sh
 

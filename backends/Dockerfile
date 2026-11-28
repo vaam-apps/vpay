@@ -199,8 +199,8 @@
 # them for the same reason it always did.
 FROM rust:1.98.0-alpine3.22 AS chef
 RUN apk add --no-cache musl-dev pkgconfig
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     cargo install cargo-chef --locked --version 0.1.78
 
 # Produces `recipe.json` — manifests and lockfile, no source. This stage is
@@ -234,8 +234,8 @@ COPY --from=planner /build/recipe.json recipe.json
 # the real build below; see rule 1 in the header. `--locked` is not passed:
 # the recipe already carries the resolved `Cargo.lock`, and cook writes its
 # own skeleton manifests, which `--locked` would reject.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     set -eu; \
     target="$(rustc -vV | sed -n 's/^host: //p')"; \
     cargo chef cook --profile dist --target "$target" \
@@ -309,8 +309,8 @@ COPY examples/merchant-demo ./examples/merchant-demo
 #
 # That constraint is exactly why `cargo chef cook` above earns its keep:
 # `target/` must live in a layer, and a layer is what BuildKit can reuse.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     set -eu; \
     target="$(rustc -vV | sed -n 's/^host: //p')"; \
     cargo build --profile dist --target "$target" -p vpay-server; \
