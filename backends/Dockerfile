@@ -198,9 +198,20 @@
 # `builder` so `planner` and `builder` share one apk layer; the builder needs
 # them for the same reason it always did.
 FROM rust:1.98.0-alpine3.22 AS chef
+# Alpine's shell is busybox ash, which supports `pipefail`. `planner` and
+# `builder` inherit this SHELL from `chef`; the builder repeats it below
+# because hadolint (2.14.0) does not follow SHELL across `FROM <stage>`. With
+# it the `rustc -vV | sed` pipes fail the build when `rustc` does (DL4006). No
+# RUN in these stages relies on a pipe's failure being ignored.
+SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
+# Alpine package versions are not pinned: the base image's tag pins the
+# Alpine release, and an exact apk version disappears from the mirror at the
+# next security update, which would break the build rather than secure it
+# (the same reasoning as examples/shop/Dockerfile).
+# hadolint ignore=DL3018
 RUN apk add --no-cache musl-dev pkgconfig
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     cargo install cargo-chef --locked --version 0.1.78
 
 # Produces `recipe.json` — manifests and lockfile, no source. This stage is
@@ -222,6 +233,8 @@ COPY examples/merchant-demo ./examples/merchant-demo
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
+# Same line as in `chef`, for hadolint: see the note there.
+SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
 WORKDIR /build
 # Before the cook, not after: `.cargo/config.toml` carries the
 # `+crt-static` rustflags for both musl triples, and dependencies compiled
@@ -234,8 +247,8 @@ COPY --from=planner /build/recipe.json recipe.json
 # the real build below; see rule 1 in the header. `--locked` is not passed:
 # the recipe already carries the resolved `Cargo.lock`, and cook writes its
 # own skeleton manifests, which `--locked` would reject.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     set -eu; \
     target="$(rustc -vV | sed -n 's/^host: //p')"; \
     cargo chef cook --profile dist --target "$target" \
@@ -309,8 +322,8 @@ COPY examples/merchant-demo ./examples/merchant-demo
 #
 # That constraint is exactly why `cargo chef cook` above earns its keep:
 # `target/` must live in a layer, and a layer is what BuildKit can reuse.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     set -eu; \
     target="$(rustc -vV | sed -n 's/^host: //p')"; \
     cargo build --profile dist --target "$target" -p vpay-server; \
